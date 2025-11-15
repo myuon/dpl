@@ -45,6 +45,7 @@ plt.show()
 
 # %%
 # データの前処理とトレーニング準備
+import os
 import time
 from pathlib import Path
 from two_layer_net import TwoLayerNet
@@ -85,8 +86,11 @@ train_loss_list = []
 # 1エポックあたりのイテレーション数
 iter_per_epoch = max(X_train.shape[0] // batch_size, 1)
 
+# NOCACHE=1が設定されている場合はキャッシュを無視
+use_cache = os.getenv("NOCACHE") != "1"
+
 # 保存された重みがあれば読み込む
-if weight_file.exists():
+if use_cache and weight_file.exists():
     print(f"Loading weights from {weight_file}...")
     network.load_params(weight_file)
     print("Weights loaded successfully!")
