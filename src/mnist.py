@@ -49,6 +49,7 @@ import os
 import time
 from pathlib import Path
 from two_layer_net import TwoLayerNet
+from optimizers.sgd import SGD
 
 # データを numpy 配列に変換し、正規化
 X_array = X.values if hasattr(X, "values") else X
@@ -77,6 +78,9 @@ weight_file = Path("build/mnist_weights.npz")
 
 # ネットワークの初期化
 network = TwoLayerNet(input_size=784, hidden_size=50, output_size=10)
+
+# オプティマイザーの初期化
+optimizer = SGD(lr=learning_rate)
 
 # 学習経過を記録
 train_acc_list = []
@@ -117,8 +121,7 @@ else:
         grad = network.gradient(x_batch, y_batch)
 
         # パラメータの更新
-        for key in ("W1", "b1", "W2", "b2"):
-            network.params[key] -= learning_rate * grad[key]
+        optimizer.update(network.params, grad)
 
         # エポックごとに精度とlossを計算
         if i % iter_per_epoch == 0:
