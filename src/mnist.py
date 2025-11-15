@@ -45,9 +45,7 @@ plt.show()
 
 # %%
 # データの前処理とトレーニング準備
-import os
 import time
-from pathlib import Path
 from two_layer_net import TwoLayerNet
 from optimizers.sgd import SGD
 
@@ -73,9 +71,6 @@ batch_size = 100
 iters = 10000
 learning_rate = 0.1
 
-# 重みファイルのパス
-weight_file = Path("build/mnist_weights.npz")
-
 # ネットワークの初期化
 network = TwoLayerNet(input_size=784, hidden_size=50, output_size=10)
 
@@ -90,89 +85,67 @@ train_loss_list = []
 # 1エポックあたりのイテレーション数
 iter_per_epoch = max(X_train.shape[0] // batch_size, 1)
 
-# NOCACHE=1が設定されている場合はキャッシュを無視
-use_cache = os.getenv("NOCACHE") != "1"
+# 学習を実行
+print(f"Starting training...")
+print(f"Batch size: {batch_size}, Iterations: {iters}, Learning rate: {learning_rate}")
+print(f"Iterations per epoch: {iter_per_epoch}")
 
-# 保存された重みがあれば読み込む
-if use_cache and weight_file.exists():
-    print(f"Loading weights from {weight_file}...")
-    network.load_params(weight_file)
-    print("Weights loaded successfully!")
+start_time = time.time()
 
-    # 読み込んだ重みで精度を確認
-    train_acc = network.accuracy(X_train, y_train)
-    test_acc = network.accuracy(X_test, y_test)
-    print(f"Loaded model - train acc = {train_acc:.4f}, test acc = {test_acc:.4f}")
-else:
-    # 重みがない場合は学習を実行
-    print(f"No saved weights found. Starting training...")
-    print(f"Batch size: {batch_size}, Iterations: {iters}, Learning rate: {learning_rate}")
-    print(f"Iterations per epoch: {iter_per_epoch}")
+for i in range(iters):
+    # ミニバッチの取得
+    batch_mask = np.random.choice(X_train.shape[0], batch_size)
+    x_batch = X_train[batch_mask]
+    y_batch = y_train[batch_mask]
 
-    start_time = time.time()
+    # 勾配の計算
+    grad = network.gradient(x_batch, y_batch)
 
-    for i in range(iters):
-        # ミニバッチの取得
-        batch_mask = np.random.choice(X_train.shape[0], batch_size)
-        x_batch = X_train[batch_mask]
-        y_batch = y_train[batch_mask]
+    # パラメータの更新
+    optimizer.update(network.params, grad)
 
-        # 勾配の計算
-        grad = network.gradient(x_batch, y_batch)
+    # エポックごとに精度とlossを計算
+    if i % iter_per_epoch == 0:
+        epoch = i // iter_per_epoch
+        train_loss = network.loss(X_train, y_train)
+        train_acc = network.accuracy(X_train, y_train)
+        test_acc = network.accuracy(X_test, y_test)
+        train_loss_list.append(train_loss)
+        train_acc_list.append(train_acc)
+        test_acc_list.append(test_acc)
 
-        # パラメータの更新
-        optimizer.update(network.params, grad)
+        elapsed_time = time.time() - start_time
+        print(
+            f"Epoch {epoch}: train loss = {train_loss:.4f}, train acc = {train_acc:.4f}, test acc = {test_acc:.4f}, time = {elapsed_time:.2f}s"
+        )
 
-        # エポックごとに精度とlossを計算
-        if i % iter_per_epoch == 0:
-            epoch = i // iter_per_epoch
-            train_loss = network.loss(X_train, y_train)
-            train_acc = network.accuracy(X_train, y_train)
-            test_acc = network.accuracy(X_test, y_test)
-            train_loss_list.append(train_loss)
-            train_acc_list.append(train_acc)
-            test_acc_list.append(test_acc)
-
-            elapsed_time = time.time() - start_time
-            print(
-                f"Epoch {epoch}: train loss = {train_loss:.4f}, train acc = {train_acc:.4f}, test acc = {test_acc:.4f}, time = {elapsed_time:.2f}s"
-            )
-
-    end_time = time.time()
-    total_time = end_time - start_time
-    print(f"\nTraining completed in {total_time:.2f} seconds")
-
-    # 学習済み重みを保存
-    print(f"Saving weights to {weight_file}...")
-    network.save_params(weight_file)
-    print("Weights saved successfully!")
+end_time = time.time()
+total_time = end_time - start_time
+print(f"\nTraining completed in {total_time:.2f} seconds")
 
 # %%
-# 精度とlossの推移をグラフ化（学習した場合のみ）
-if train_acc_list:
-    epochs = np.arange(len(train_acc_list))
+# 精度とlossの推移をグラフ化
+epochs = np.arange(len(train_acc_list))
 
-    # 2つのサブプロットを作成
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
+# 2つのサブプロットを作成
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
 
-    # 精度のグラフ
-    ax1.plot(epochs, train_acc_list, label="Train accuracy", marker="o")
-    ax1.plot(epochs, test_acc_list, label="Test accuracy", marker="s")
-    ax1.set_xlabel("Epoch")
-    ax1.set_ylabel("Accuracy")
-    ax1.set_title("Accuracy Progress")
-    ax1.legend()
-    ax1.grid(True)
+# 精度のグラフ
+ax1.plot(epochs, train_acc_list, label="Train accuracy", marker="o")
+ax1.plot(epochs, test_acc_list, label="Test accuracy", marker="s")
+ax1.set_xlabel("Epoch")
+ax1.set_ylabel("Accuracy")
+ax1.set_title("Accuracy Progress")
+ax1.legend()
+ax1.grid(True)
 
-    # Lossのグラフ
-    ax2.plot(epochs, train_loss_list, label="Train loss", marker="o", color="red")
-    ax2.set_xlabel("Epoch")
-    ax2.set_ylabel("Loss")
-    ax2.set_title("Loss Progress")
-    ax2.legend()
-    ax2.grid(True)
+# Lossのグラフ
+ax2.plot(epochs, train_loss_list, label="Train loss", marker="o", color="red")
+ax2.set_xlabel("Epoch")
+ax2.set_ylabel("Loss")
+ax2.set_title("Loss Progress")
+ax2.legend()
+ax2.grid(True)
 
-    plt.tight_layout()
-    plt.show()
-else:
-    print("No training history to plot (weights were loaded from file)")
+plt.tight_layout()
+plt.show()
