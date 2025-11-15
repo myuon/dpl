@@ -1,8 +1,9 @@
 import numpy as np
 from collections import OrderedDict
-from layers.affine import Affine
-from layers.relu import Relu
-from layers.softmax_with_loss import SoftmaxWithLoss
+from pathlib import Path
+from src.layers.affine import Affine
+from src.layers.relu import Relu
+from src.layers.softmax_with_loss import SoftmaxWithLoss
 
 
 class TwoLayerNet:
@@ -72,3 +73,29 @@ class TwoLayerNet:
         grads["b2"] = affine2.db
 
         return grads
+
+    def save_params(self, file_path: str | Path) -> None:
+        """パラメータをファイルに保存"""
+        file_path = Path(file_path)
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(
+            file_path,
+            W1=self.params["W1"],
+            b1=self.params["b1"],
+            W2=self.params["W2"],
+            b2=self.params["b2"],
+        )
+
+    def load_params(self, file_path: str | Path) -> None:
+        """パラメータをファイルから読み込み"""
+        file_path = Path(file_path)
+        if not file_path.exists():
+            raise FileNotFoundError(f"Parameter file not found: {file_path}")
+
+        params = np.load(file_path)
+        for key in ("W1", "b1", "W2", "b2"):
+            self.params[key] = params[key]
+
+        # レイヤーのパラメータも更新
+        self.layers["Affine1"] = Affine(self.params["W1"], self.params["b1"])
+        self.layers["Affine2"] = Affine(self.params["W2"], self.params["b2"])
