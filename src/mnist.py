@@ -47,7 +47,7 @@ plt.show()
 # データの前処理とトレーニング準備
 import time
 from two_layer_net import TwoLayerNet
-from optimizers.sgd import SGD
+from optimizers.adam import Adam
 
 # データを numpy 配列に変換し、正規化
 X_array = X.values if hasattr(X, "values") else X
@@ -69,13 +69,13 @@ print(f"Training data: {X_train.shape}, Test data: {X_test.shape}")
 # ニューラルネットワークの学習
 batch_size = 100
 iters = 10000
-learning_rate = 0.1
+learning_rate = 0.001
 
 # ネットワークの初期化
 network = TwoLayerNet(input_size=784, hidden_size=50, output_size=10)
 
 # オプティマイザーの初期化
-optimizer = SGD(lr=learning_rate)
+optimizer = Adam(lr=learning_rate)
 
 # 学習経過を記録
 train_acc_list = []
