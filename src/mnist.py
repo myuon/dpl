@@ -80,7 +80,7 @@ optimizer = Adam(lr=learning_rate)
 # 学習経過を記録
 train_acc_list = []
 test_acc_list = []
-train_loss_list = []
+iter_loss_list = []  # イテレーションごとのloss
 
 # 1エポックあたりのイテレーション数
 iter_per_epoch = max(X_train.shape[0] // batch_size, 1)
@@ -104,19 +104,21 @@ for i in range(iters):
     # パラメータの更新
     optimizer.update(network.params, grad)
 
-    # エポックごとに精度とlossを計算
+    # イテレーションごとにミニバッチのlossを記録
+    loss = network.loss(x_batch, y_batch)
+    iter_loss_list.append(loss)
+
+    # エポックごとに精度を計算
     if i % iter_per_epoch == 0:
         epoch = i // iter_per_epoch
-        train_loss = network.loss(X_train, y_train)
         train_acc = network.accuracy(X_train, y_train)
         test_acc = network.accuracy(X_test, y_test)
-        train_loss_list.append(train_loss)
         train_acc_list.append(train_acc)
         test_acc_list.append(test_acc)
 
         elapsed_time = time.time() - start_time
         print(
-            f"Epoch {epoch}: train loss = {train_loss:.4f}, train acc = {train_acc:.4f}, test acc = {test_acc:.4f}, time = {elapsed_time:.2f}s"
+            f"Epoch {epoch}: train loss = {loss:.4f}, train acc = {train_acc:.4f}, test acc = {test_acc:.4f}, time = {elapsed_time:.2f}s"
         )
 
 end_time = time.time()
@@ -126,11 +128,12 @@ print(f"\nTraining completed in {total_time:.2f} seconds")
 # %%
 # 精度とlossの推移をグラフ化
 epochs = np.arange(len(train_acc_list))
+iterations = np.arange(len(iter_loss_list))
 
 # 2つのサブプロットを作成
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
 
-# 精度のグラフ
+# 精度のグラフ（エポックごと）
 ax1.plot(epochs, train_acc_list, label="Train accuracy", marker="o")
 ax1.plot(epochs, test_acc_list, label="Test accuracy", marker="s")
 ax1.set_xlabel("Epoch")
@@ -139,11 +142,11 @@ ax1.set_title("Accuracy Progress")
 ax1.legend()
 ax1.grid(True)
 
-# Lossのグラフ
-ax2.plot(epochs, train_loss_list, label="Train loss", marker="o", color="red")
-ax2.set_xlabel("Epoch")
+# Lossのグラフ（イテレーションごと）
+ax2.plot(iterations, iter_loss_list, label="Train loss", color="red", alpha=0.7)
+ax2.set_xlabel("Iteration")
 ax2.set_ylabel("Loss")
-ax2.set_title("Loss Progress")
+ax2.set_title("Loss Progress (per iteration)")
 ax2.legend()
 ax2.grid(True)
 
