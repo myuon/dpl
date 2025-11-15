@@ -1,9 +1,9 @@
 import numpy as np
 from collections import OrderedDict
 from pathlib import Path
-from src.layers.affine import Affine
-from src.layers.relu import Relu
-from src.layers.softmax_with_loss import SoftmaxWithLoss
+from layers.affine import Affine
+from layers.relu import Relu
+from layers.softmax_with_loss import SoftmaxWithLoss
 
 
 class TwoLayerNet:
