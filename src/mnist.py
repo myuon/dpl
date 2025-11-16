@@ -46,7 +46,10 @@ plt.show()
 # %%
 # データの前処理とトレーニング準備
 import time
-from two_layer_net import TwoLayerNet
+import importlib
+import n_layer_net
+importlib.reload(n_layer_net)
+from n_layer_net import NLayerNet
 from optimizers.adam import Adam
 
 # データを numpy 配列に変換し、正規化
@@ -64,6 +67,7 @@ X_train, X_test = X_array[:60000], X_array[60000:]
 y_train, y_test = y_array[:60000], y_array[60000:]
 
 print(f"Training data: {X_train.shape}, Test data: {X_test.shape}")
+
 
 # %%
 # 学習関数の定義
@@ -149,8 +153,8 @@ def train_network(
 batch_size = 100
 iters = 10000
 
-# ネットワークの初期化
-network = TwoLayerNet(input_size=784, hidden_size=50, output_size=10)
+# ネットワークの初期化（2層ニューラルネットワーク）
+network = NLayerNet(input_size=784, hidden_size=50, output_size=10, hidden_layer_num=4)
 
 # Adamオプティマイザーで学習
 optimizer = Adam(lr=0.001)
@@ -182,6 +186,41 @@ ax2.set_ylabel("Loss")
 ax2.set_title("Loss Progress (per iteration)")
 ax2.legend()
 ax2.grid(True)
+
+plt.tight_layout()
+plt.show()
+
+# %%
+# 各層の活性化値のヒストグラムを可視化
+# テストデータの一部を使って活性化値を記録
+sample_size = 1000
+x_sample = X_test[:sample_size]
+
+# 活性化値を記録しながら予測
+network.predict(x_sample, record_activations=True)
+
+# ReLU層の活性化値のみを抽出
+relu_activations = {
+    name: activations
+    for name, activations in network.activations.items()
+    if "Relu" in name
+}
+
+# ヒストグラムを描画
+num_layers = len(relu_activations)
+fig, axes = plt.subplots(1, num_layers, figsize=(5 * num_layers, 4))
+
+# 1層の場合はaxesをリストに変換
+if num_layers == 1:
+    axes = [axes]
+
+for idx, (layer_name, activations) in enumerate(relu_activations.items()):
+    ax = axes[idx]
+    ax.hist(activations.flatten(), bins=50, alpha=0.7, color="blue", edgecolor="black")
+    ax.set_xlabel("Activation value")
+    ax.set_ylabel("Frequency")
+    ax.set_title(f"{layer_name} Activation Distribution")
+    ax.grid(True, alpha=0.3)
 
 plt.tight_layout()
 plt.show()
