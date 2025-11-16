@@ -51,6 +51,7 @@ import n_layer_net
 importlib.reload(n_layer_net)
 from n_layer_net import NLayerNet
 from optimizers.adam import Adam
+from weight_init import he_weight_init
 
 # データを numpy 配列に変換し、正規化
 X_array = X.values if hasattr(X, "values") else X
@@ -149,43 +150,47 @@ def train_network(
 
 
 # %%
-# ニューラルネットワークの学習
+# ニューラルネットワークの学習（He初期化）
 batch_size = 100
 iters = 10000
 
-# ネットワークの初期化（2層ニューラルネットワーク）
-network = NLayerNet(input_size=784, hidden_size=50, output_size=10, hidden_layer_num=4)
-
-# Adamオプティマイザーで学習
+print("=" * 50)
+print("Training with He initialization")
+print("=" * 50)
+network = NLayerNet(
+    input_size=784,
+    hidden_size=50,
+    output_size=10,
+    hidden_layer_num=4,
+    weight_initializer=he_weight_init(),
+)
 optimizer = Adam(lr=0.001)
 train_acc_list, test_acc_list, iter_loss_list = train_network(
     network, X_train, y_train, X_test, y_test, optimizer, batch_size, iters
 )
 
 # %%
-# 精度とlossの推移をグラフ化
-epochs = np.arange(len(train_acc_list))
+# 学習結果の可視化
+fig, axes = plt.subplots(1, 2, figsize=(15, 5))
+
+# 左: Lossの推移（イテレーションごと）
 iterations = np.arange(len(iter_loss_list))
+axes[0].plot(iterations, iter_loss_list, label="Training Loss", color="blue", alpha=0.7)
+axes[0].set_xlabel("Iteration")
+axes[0].set_ylabel("Loss")
+axes[0].set_title("Training Loss (He initialization)")
+axes[0].legend()
+axes[0].grid(True)
 
-# 2つのサブプロットを作成
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
-
-# 精度のグラフ（エポックごと）
-ax1.plot(epochs, train_acc_list, label="Train accuracy", marker="o")
-ax1.plot(epochs, test_acc_list, label="Test accuracy", marker="s")
-ax1.set_xlabel("Epoch")
-ax1.set_ylabel("Accuracy")
-ax1.set_title("Accuracy Progress")
-ax1.legend()
-ax1.grid(True)
-
-# Lossのグラフ（イテレーションごと）
-ax2.plot(iterations, iter_loss_list, label="Train loss", color="red", alpha=0.7)
-ax2.set_xlabel("Iteration")
-ax2.set_ylabel("Loss")
-ax2.set_title("Loss Progress (per iteration)")
-ax2.legend()
-ax2.grid(True)
+# 右: 精度の推移（エポックごと）
+epochs = np.arange(len(train_acc_list))
+axes[1].plot(epochs, train_acc_list, label="Train Accuracy", color="blue", marker="o", alpha=0.7)
+axes[1].plot(epochs, test_acc_list, label="Test Accuracy", color="red", marker="s", alpha=0.7)
+axes[1].set_xlabel("Epoch")
+axes[1].set_ylabel("Accuracy")
+axes[1].set_title("Training and Test Accuracy")
+axes[1].legend()
+axes[1].grid(True)
 
 plt.tight_layout()
 plt.show()

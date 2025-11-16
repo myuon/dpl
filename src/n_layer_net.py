@@ -1,5 +1,6 @@
 import numpy as np
 from collections import OrderedDict
+from typing import Callable, Optional
 from layers.affine import Affine
 from layers.relu import Relu
 from layers.softmax_with_loss import SoftmaxWithLoss
@@ -19,6 +20,7 @@ class NLayerNet:
         output_size: int,
         hidden_layer_num: int = 1,
         weight_init_std: float = 0.01,
+        weight_initializer: Optional[Callable[[int, int], np.ndarray]] = None,
     ) -> None:
         """
         Args:
@@ -26,24 +28,35 @@ class NLayerNet:
             hidden_size: 隠れ層のサイズ
             output_size: 出力層のサイズ
             hidden_layer_num: 隠れ層の数
-            weight_init_std: 重みの初期化時の標準偏差
+            weight_init_std: 重みの初期化時の標準偏差（weight_initializerがNoneの場合に使用）
+            weight_initializer: 重み初期化関数。(n_in, n_out) -> np.ndarray の形式
         """
         self.hidden_layer_num = hidden_layer_num
         self.params: dict[str, np.ndarray] = {}
 
+        # 重み初期化関数の設定
+        if weight_initializer is None:
+            # デフォルトの初期化関数
+            def default_init(n_in: int, n_out: int) -> np.ndarray:
+                return weight_init_std * np.random.randn(n_in, n_out)
+
+            weight_init_fn = default_init
+        else:
+            weight_init_fn = weight_initializer
+
         # パラメータの初期化
         # 第1層（入力層 -> 最初の隠れ層）
-        self.params["W1"] = weight_init_std * np.random.randn(input_size, hidden_size)
+        self.params["W1"] = weight_init_fn(input_size, hidden_size)
         self.params["b1"] = np.zeros(hidden_size)
 
         # 中間の隠れ層
         for i in range(2, hidden_layer_num + 1):
-            self.params[f"W{i}"] = weight_init_std * np.random.randn(hidden_size, hidden_size)
+            self.params[f"W{i}"] = weight_init_fn(hidden_size, hidden_size)
             self.params[f"b{i}"] = np.zeros(hidden_size)
 
         # 最終層（最後の隠れ層 -> 出力層）
         final_layer_idx = hidden_layer_num + 1
-        self.params[f"W{final_layer_idx}"] = weight_init_std * np.random.randn(hidden_size, output_size)
+        self.params[f"W{final_layer_idx}"] = weight_init_fn(hidden_size, output_size)
         self.params[f"b{final_layer_idx}"] = np.zeros(output_size)
 
         # レイヤーの生成
