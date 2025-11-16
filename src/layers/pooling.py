@@ -1,0 +1,129 @@
+import numpy as np
+
+
+class Pooling:
+    """プーリング層（Max Pooling）
+
+    4次元配列のデータを処理する：
+    - 入力: (N, C, H, W) - N: バッチサイズ, C: チャンネル数, H: 高さ, W: 幅
+    - 出力: (N, C, OH, OW) - OH: 出力高さ, OW: 出力幅
+
+    チャンネル数は変わらず、空間方向のサイズだけが縮小される。
+    """
+
+    def __init__(
+        self,
+        pool_h: int,
+        pool_w: int,
+        stride: int = 1,
+        pad: int = 0
+    ) -> None:
+        """
+        Args:
+            pool_h: プーリング領域の高さ
+            pool_w: プーリング領域の幅
+            stride: ストライド
+            pad: パディング
+        """
+        self.pool_h = pool_h
+        self.pool_w = pool_w
+        self.stride = stride
+        self.pad = pad
+
+        # backward用
+        self.x: np.ndarray | None = None
+        self.arg_max: np.ndarray | None = None
+
+    def forward(self, x: np.ndarray) -> np.ndarray:
+        """順伝播
+
+        Args:
+            x: 入力 (N, C, H, W)
+
+        Returns:
+            出力 (N, C, OH, OW)
+        """
+        N, C, H, W = x.shape
+
+        # 出力サイズの計算
+        out_h = (H + 2 * self.pad - self.pool_h) // self.stride + 1
+        out_w = (W + 2 * self.pad - self.pool_w) // self.stride + 1
+
+        # パディング
+        if self.pad > 0:
+            x_pad = np.pad(x, [(0, 0), (0, 0), (self.pad, self.pad), (self.pad, self.pad)], 'constant')
+        else:
+            x_pad = x
+
+        # im2col的な変換（プーリング用）
+        # (N, C, H, W) -> (N*C*out_h*out_w, pool_h*pool_w)
+        col = np.zeros((N, C, self.pool_h, self.pool_w, out_h, out_w))
+
+        for y in range(self.pool_h):
+            y_max = y + self.stride * out_h
+            for x_idx in range(self.pool_w):
+                x_max = x_idx + self.stride * out_w
+                col[:, :, y, x_idx, :, :] = x_pad[:, :, y:y_max:self.stride, x_idx:x_max:self.stride]
+
+        # (N, C, pool_h, pool_w, out_h, out_w) -> (N*C*out_h*out_w, pool_h*pool_w)
+        col = col.transpose(0, 1, 4, 5, 2, 3).reshape(-1, self.pool_h * self.pool_w)
+
+        # 最大値のインデックスを保存（backward用）
+        arg_max = np.argmax(col, axis=1)
+
+        # 最大値を取得
+        out = np.max(col, axis=1)
+
+        # 形状を整形 (N*C*out_h*out_w,) -> (N, C, out_h, out_w)
+        out = out.reshape(N, C, out_h, out_w)
+
+        # backward用に保存
+        self.x = x
+        self.arg_max = arg_max
+
+        return out
+
+    def backward(self, dout: np.ndarray) -> np.ndarray:
+        """逆伝播
+
+        Args:
+            dout: 出力側の勾配 (N, C, OH, OW)
+
+        Returns:
+            入力側の勾配 (N, C, H, W)
+        """
+        assert self.x is not None
+        assert self.arg_max is not None
+
+        N, C, H, W = self.x.shape
+        out_h, out_w = dout.shape[2], dout.shape[3]
+
+        # doutを1次元に変換 (N*C*out_h*out_w,)
+        dout_flat = dout.reshape(-1)
+
+        # 勾配の分配用の配列 (N*C*out_h*out_w, pool_h*pool_w)
+        dmax = np.zeros((dout_flat.size, self.pool_h * self.pool_w))
+
+        # 最大値だった位置にだけ勾配を流す
+        dmax[np.arange(self.arg_max.size), self.arg_max] = dout_flat
+
+        # (N*C*out_h*out_w, pool_h*pool_w) -> (N, C, out_h, out_w, pool_h, pool_w)
+        dmax = dmax.reshape(N, C, out_h, out_w, self.pool_h, self.pool_w)
+
+        # col2im的な逆変換
+        # パディングを含む入力サイズ
+        dx = np.zeros((N, C, H + 2 * self.pad + self.stride - 1, W + 2 * self.pad + self.stride - 1))
+
+        for y in range(self.pool_h):
+            y_max = y + self.stride * out_h
+            for x in range(self.pool_w):
+                x_max = x + self.stride * out_w
+                dx[:, :, y:y_max:self.stride, x:x_max:self.stride] += dmax[:, :, :, :, y, x]
+
+        # パディング部分を除去
+        if self.pad > 0:
+            dx = dx[:, :, self.pad:H + self.pad, self.pad:W + self.pad]
+        else:
+            dx = dx[:, :, :H, :W]
+
+        return dx
