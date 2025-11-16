@@ -66,64 +66,97 @@ y_train, y_test = y_array[:60000], y_array[60000:]
 print(f"Training data: {X_train.shape}, Test data: {X_test.shape}")
 
 # %%
+# 学習関数の定義
+def train_network(
+    network,
+    X_train,
+    y_train,
+    X_test,
+    y_test,
+    optimizer,
+    batch_size=100,
+    iters=10000,
+):
+    """ニューラルネットワークを学習する
+
+    Args:
+        network: 学習対象のネットワーク
+        X_train: 訓練データ
+        y_train: 訓練ラベル
+        X_test: テストデータ
+        y_test: テストラベル
+        optimizer: オプティマイザー（SGD, Adamなど）
+        batch_size: ミニバッチサイズ
+        iters: イテレーション数
+
+    Returns:
+        tuple: (train_acc_list, test_acc_list, iter_loss_list)
+    """
+
+    # 学習経過を記録
+    train_acc_list = []
+    test_acc_list = []
+    iter_loss_list = []  # イテレーションごとのloss
+
+    # 1エポックあたりのイテレーション数
+    iter_per_epoch = max(X_train.shape[0] // batch_size, 1)
+
+    # 学習を実行
+    print(f"Starting training...")
+    print(f"Batch size: {batch_size}, Iterations: {iters}")
+    print(f"Iterations per epoch: {iter_per_epoch}")
+
+    start_time = time.time()
+
+    for i in range(iters):
+        # ミニバッチの取得
+        batch_mask = np.random.choice(X_train.shape[0], batch_size)
+        x_batch = X_train[batch_mask]
+        y_batch = y_train[batch_mask]
+
+        # 勾配の計算
+        grad = network.gradient(x_batch, y_batch)
+
+        # パラメータの更新
+        optimizer.update(network.params, grad)
+
+        # イテレーションごとにミニバッチのlossを記録
+        loss = network.loss(x_batch, y_batch)
+        iter_loss_list.append(loss)
+
+        # エポックごとに精度を計算
+        if i % iter_per_epoch == 0:
+            epoch = i // iter_per_epoch
+            train_acc = network.accuracy(X_train, y_train)
+            test_acc = network.accuracy(X_test, y_test)
+            train_acc_list.append(train_acc)
+            test_acc_list.append(test_acc)
+
+            elapsed_time = time.time() - start_time
+            print(
+                f"Epoch {epoch}: train loss = {loss:.4f}, train acc = {train_acc:.4f}, test acc = {test_acc:.4f}, time = {elapsed_time:.2f}s"
+            )
+
+    end_time = time.time()
+    total_time = end_time - start_time
+    print(f"\nTraining completed in {total_time:.2f} seconds")
+
+    return train_acc_list, test_acc_list, iter_loss_list
+
+
+# %%
 # ニューラルネットワークの学習
 batch_size = 100
 iters = 10000
-learning_rate = 0.001
 
 # ネットワークの初期化
 network = TwoLayerNet(input_size=784, hidden_size=50, output_size=10)
 
-# オプティマイザーの初期化
-optimizer = Adam(lr=learning_rate)
-
-# 学習経過を記録
-train_acc_list = []
-test_acc_list = []
-iter_loss_list = []  # イテレーションごとのloss
-
-# 1エポックあたりのイテレーション数
-iter_per_epoch = max(X_train.shape[0] // batch_size, 1)
-
-# 学習を実行
-print(f"Starting training...")
-print(f"Batch size: {batch_size}, Iterations: {iters}, Learning rate: {learning_rate}")
-print(f"Iterations per epoch: {iter_per_epoch}")
-
-start_time = time.time()
-
-for i in range(iters):
-    # ミニバッチの取得
-    batch_mask = np.random.choice(X_train.shape[0], batch_size)
-    x_batch = X_train[batch_mask]
-    y_batch = y_train[batch_mask]
-
-    # 勾配の計算
-    grad = network.gradient(x_batch, y_batch)
-
-    # パラメータの更新
-    optimizer.update(network.params, grad)
-
-    # イテレーションごとにミニバッチのlossを記録
-    loss = network.loss(x_batch, y_batch)
-    iter_loss_list.append(loss)
-
-    # エポックごとに精度を計算
-    if i % iter_per_epoch == 0:
-        epoch = i // iter_per_epoch
-        train_acc = network.accuracy(X_train, y_train)
-        test_acc = network.accuracy(X_test, y_test)
-        train_acc_list.append(train_acc)
-        test_acc_list.append(test_acc)
-
-        elapsed_time = time.time() - start_time
-        print(
-            f"Epoch {epoch}: train loss = {loss:.4f}, train acc = {train_acc:.4f}, test acc = {test_acc:.4f}, time = {elapsed_time:.2f}s"
-        )
-
-end_time = time.time()
-total_time = end_time - start_time
-print(f"\nTraining completed in {total_time:.2f} seconds")
+# Adamオプティマイザーで学習
+optimizer = Adam(lr=0.001)
+train_acc_list, test_acc_list, iter_loss_list = train_network(
+    network, X_train, y_train, X_test, y_test, optimizer, batch_size, iters
+)
 
 # %%
 # 精度とlossの推移をグラフ化
