@@ -150,45 +150,71 @@ def train_network(
 
 
 # %%
-# ニューラルネットワークの学習（He初期化）
+# Batch Normalizationの比較実験
 batch_size = 100
 iters = 10000
 
+# 1. Batch Normalizationなし
 print("=" * 50)
-print("Training with He initialization")
+print("Training WITHOUT Batch Normalization")
 print("=" * 50)
-network = NLayerNet(
+network_without_bn = NLayerNet(
     input_size=784,
     hidden_size=50,
     output_size=10,
     hidden_layer_num=4,
     weight_initializer=he_weight_init(),
+    use_batchnorm=False,
 )
-optimizer = Adam(lr=0.001)
-train_acc_list, test_acc_list, iter_loss_list = train_network(
-    network, X_train, y_train, X_test, y_test, optimizer, batch_size, iters
+optimizer_without_bn = Adam(lr=0.001)
+train_acc_without_bn, test_acc_without_bn, iter_loss_without_bn = train_network(
+    network_without_bn, X_train, y_train, X_test, y_test, optimizer_without_bn, batch_size, iters
 )
 
+# 2. Batch Normalizationあり
+print("\n" + "=" * 50)
+print("Training WITH Batch Normalization")
+print("=" * 50)
+network_with_bn = NLayerNet(
+    input_size=784,
+    hidden_size=50,
+    output_size=10,
+    hidden_layer_num=4,
+    weight_initializer=he_weight_init(),
+    use_batchnorm=True,
+)
+optimizer_with_bn = Adam(lr=0.001)
+train_acc_with_bn, test_acc_with_bn, iter_loss_with_bn = train_network(
+    network_with_bn, X_train, y_train, X_test, y_test, optimizer_with_bn, batch_size, iters
+)
+
+# 最後に学習したネットワークを保持（活性化値の可視化用）
+network = network_with_bn
+train_acc_list = train_acc_with_bn
+test_acc_list = test_acc_with_bn
+iter_loss_list = iter_loss_with_bn
+
 # %%
-# 学習結果の可視化
+# Batch Normalizationの比較可視化
 fig, axes = plt.subplots(1, 2, figsize=(15, 5))
 
 # 左: Lossの推移（イテレーションごと）
-iterations = np.arange(len(iter_loss_list))
-axes[0].plot(iterations, iter_loss_list, label="Training Loss", color="blue", alpha=0.7)
+iterations = np.arange(len(iter_loss_without_bn))
+axes[0].plot(iterations, iter_loss_without_bn, label="Without BatchNorm", color="blue", alpha=0.7)
+axes[0].plot(iterations, iter_loss_with_bn, label="With BatchNorm", color="red", alpha=0.7)
 axes[0].set_xlabel("Iteration")
 axes[0].set_ylabel("Loss")
-axes[0].set_title("Training Loss (He initialization)")
+axes[0].set_title("Training Loss Comparison")
 axes[0].legend()
 axes[0].grid(True)
 
-# 右: 精度の推移（エポックごと）
-epochs = np.arange(len(train_acc_list))
-axes[1].plot(epochs, train_acc_list, label="Train Accuracy", color="blue", marker="o", alpha=0.7)
-axes[1].plot(epochs, test_acc_list, label="Test Accuracy", color="red", marker="s", alpha=0.7)
+# 右: テスト精度の推移（エポックごと）
+epochs = np.arange(len(test_acc_without_bn))
+axes[1].plot(epochs, test_acc_without_bn, label="Without BatchNorm", color="blue", marker="o", alpha=0.7)
+axes[1].plot(epochs, test_acc_with_bn, label="With BatchNorm", color="red", marker="s", alpha=0.7)
 axes[1].set_xlabel("Epoch")
-axes[1].set_ylabel("Accuracy")
-axes[1].set_title("Training and Test Accuracy")
+axes[1].set_ylabel("Test Accuracy")
+axes[1].set_title("Test Accuracy Comparison")
 axes[1].legend()
 axes[1].grid(True)
 

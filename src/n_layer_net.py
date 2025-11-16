@@ -3,6 +3,7 @@ from collections import OrderedDict
 from typing import Callable, Optional
 from layers.affine import Affine
 from layers.relu import Relu
+from layers.batch_normalization import BatchNormalization
 from layers.softmax_with_loss import SoftmaxWithLoss
 
 
@@ -21,6 +22,7 @@ class NLayerNet:
         hidden_layer_num: int = 1,
         weight_init_std: float = 0.01,
         weight_initializer: Optional[Callable[[int, int], np.ndarray]] = None,
+        use_batchnorm: bool = False,
     ) -> None:
         """
         Args:
@@ -30,8 +32,10 @@ class NLayerNet:
             hidden_layer_num: 隠れ層の数
             weight_init_std: 重みの初期化時の標準偏差（weight_initializerがNoneの場合に使用）
             weight_initializer: 重み初期化関数。(n_in, n_out) -> np.ndarray の形式
+            use_batchnorm: Batch Normalizationを使用するかどうか
         """
         self.hidden_layer_num = hidden_layer_num
+        self.use_batchnorm = use_batchnorm
         self.params: dict[str, np.ndarray] = {}
 
         # 重み初期化関数の設定
@@ -40,7 +44,7 @@ class NLayerNet:
             def default_init(n_in: int, n_out: int) -> np.ndarray:
                 return weight_init_std * np.random.randn(n_in, n_out)
 
-            weight_init_fn = default_init
+            weight_init_fn: Callable[[int, int], np.ndarray] = default_init
         else:
             weight_init_fn = weight_initializer
 
@@ -59,12 +63,25 @@ class NLayerNet:
         self.params[f"W{final_layer_idx}"] = weight_init_fn(hidden_size, output_size)
         self.params[f"b{final_layer_idx}"] = np.zeros(output_size)
 
-        # レイヤーの生成
-        self.layers: OrderedDict[str, Affine | Relu] = OrderedDict()
+        # Batch Normalizationのパラメータ初期化
+        if use_batchnorm:
+            for i in range(1, hidden_layer_num + 1):
+                self.params[f"gamma{i}"] = np.ones(hidden_size)
+                self.params[f"beta{i}"] = np.zeros(hidden_size)
 
-        # 隠れ層の構築（Affine + ReLU）
+        # レイヤーの生成
+        self.layers: OrderedDict[str, Affine | Relu | BatchNormalization] = OrderedDict()
+
+        # 隠れ層の構築（Affine + [BatchNorm] + ReLU）
         for i in range(1, hidden_layer_num + 1):
             self.layers[f"Affine{i}"] = Affine(self.params[f"W{i}"], self.params[f"b{i}"])
+
+            if use_batchnorm:
+                self.layers[f"BatchNorm{i}"] = BatchNormalization(
+                    self.params[f"gamma{i}"],
+                    self.params[f"beta{i}"]
+                )
+
             self.layers[f"Relu{i}"] = Relu()
 
         # 出力層（Affineのみ）
@@ -75,12 +92,13 @@ class NLayerNet:
 
         self.last_layer = SoftmaxWithLoss()
 
-    def predict(self, x: np.ndarray, record_activations: bool = False) -> np.ndarray:
+    def predict(self, x: np.ndarray, record_activations: bool = False, train_flg: bool = False) -> np.ndarray:
         """予測を実行
 
         Args:
             x: 入力データ
             record_activations: Trueの場合、各層の活性化値を記録する
+            train_flg: 学習時はTrue、推論時はFalse（Batch Normalization用）
 
         Returns:
             予測結果
@@ -89,18 +107,21 @@ class NLayerNet:
             self.activations: dict[str, np.ndarray] = {}
 
         for layer_name, layer in self.layers.items():
-            x = layer.forward(x)
+            if isinstance(layer, BatchNormalization):
+                x = layer.forward(x, train_flg)
+            else:
+                x = layer.forward(x)
             if record_activations:
                 self.activations[layer_name] = x.copy()
 
         return x
 
     def loss(self, x: np.ndarray, t: np.ndarray) -> float:
-        y = self.predict(x)
+        y = self.predict(x, train_flg=True)
         return self.last_layer.forward(y, t)
 
     def accuracy(self, x: np.ndarray, t: np.ndarray) -> float:
-        y = self.predict(x)
+        y = self.predict(x, train_flg=False)
         y_pred = np.argmax(y, axis=1)
         t_label = np.argmax(t, axis=1) if t.ndim != 1 else t
 
@@ -130,5 +151,15 @@ class NLayerNet:
 
             grads[f"W{i}"] = affine_layer.dW
             grads[f"b{i}"] = affine_layer.db
+
+        # Batch Normalizationの勾配を取得
+        if self.use_batchnorm:
+            for i in range(1, self.hidden_layer_num + 1):
+                bn_layer = self.layers[f"BatchNorm{i}"]
+                assert isinstance(bn_layer, BatchNormalization)
+                assert bn_layer.dgamma is not None and bn_layer.dbeta is not None
+
+                grads[f"gamma{i}"] = bn_layer.dgamma
+                grads[f"beta{i}"] = bn_layer.dbeta
 
         return grads
