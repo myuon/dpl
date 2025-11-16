@@ -5,7 +5,6 @@ from layers.convolution import Convolution
 from layers.relu import Relu
 from layers.pooling import Pooling
 from layers.affine import Affine
-from layers.dropout import Dropout
 from layers.softmax_with_loss import SoftmaxWithLoss
 from computational_graph import get_global_recorder
 
@@ -14,8 +13,7 @@ class SimpleCNN:
     """シンプルなCNNモデル
 
     アーキテクチャ:
-    Input -> (Conv -> ReLU -> Conv -> ReLU -> Pooling) * 3
-          -> Affine -> ReLU -> Dropout -> Affine -> Dropout -> Softmax
+    Input -> Conv -> ReLU -> Pooling -> Affine -> ReLU -> Affine -> Softmax
     """
 
     def __init__(
@@ -25,16 +23,13 @@ class SimpleCNN:
         hidden_size: int = 100,
         output_size: int = 10,
         weight_init_std: float = 0.01,
-        dropout_ratio: float = 0.5,
     ) -> None:
-        # backward用に保存
-        self.pool_output_shape: tuple[int, int, int, int] | None = None
         """
         Args:
             input_dim: 入力データの形状 (C, H, W)
             conv_param: 畳み込み層のパラメータ
                 {
-                    'filter_num': フィルタ数のリスト (3要素),
+                    'filter_num': フィルタ数,
                     'filter_size': フィルタサイズ,
                     'pad': パディング,
                     'stride': ストライド
@@ -42,13 +37,15 @@ class SimpleCNN:
             hidden_size: 全結合層の隠れ層サイズ
             output_size: 出力サイズ（クラス数）
             weight_init_std: 重みの初期化時の標準偏差
-            dropout_ratio: ドロップアウト率
         """
+        # backward用に保存
+        self.pool_output_shape: tuple[int, int, int, int] | None = None
+
         if conv_param is None:
             conv_param = {
-                'filter_num': [16, 32, 64],
-                'filter_size': 3,
-                'pad': 1,
+                'filter_num': 16,
+                'filter_size': 5,
+                'pad': 0,
                 'stride': 1
             }
 
@@ -58,87 +55,54 @@ class SimpleCNN:
         filter_stride = conv_param['stride']
         input_channel, input_h, input_w = input_dim
 
-        # 各畳み込み層のチャンネル数
-        # 各ブロックで2つのConv層があるので、チャンネル数は
-        # [input_channel, filter_num[0], filter_num[0], filter_num[1], filter_num[1], filter_num[2], filter_num[2]]
-        channels = [input_channel]
-        for fn in filter_num:
-            channels.extend([fn, fn])
+        # Conv層の出力サイズを計算
+        conv_output_h = (input_h - filter_size + 2 * filter_pad) // filter_stride + 1
+        conv_output_w = (input_w - filter_size + 2 * filter_pad) // filter_stride + 1
+
+        # Pooling層の出力サイズを計算
+        pool_output_h = conv_output_h // 2
+        pool_output_w = conv_output_w // 2
 
         self.params: dict[str, np.ndarray] = {}
 
-        # 畳み込み層のパラメータ初期化
-        # (Conv -> ReLU -> Conv -> ReLU -> Pooling) * 3
-        conv_output_h = input_h
-        conv_output_w = input_w
-
-        for block_idx in range(3):
-            for conv_idx in range(2):
-                layer_idx = block_idx * 2 + conv_idx + 1
-                in_channels = channels[layer_idx - 1]
-                out_channels = channels[layer_idx]
-
-                # Heの初期化（ReLU用）
-                self.params[f'W_conv{layer_idx}'] = weight_init_std * np.random.randn(
-                    out_channels, in_channels, filter_size, filter_size
-                ) * np.sqrt(2.0 / (in_channels * filter_size * filter_size))
-                self.params[f'b_conv{layer_idx}'] = np.zeros(out_channels)
-
-            # プーリング層の後のサイズを計算
-            conv_output_h = conv_output_h // 2
-            conv_output_w = conv_output_w // 2
+        # Conv層のパラメータ初期化（He初期化）
+        self.params['W1'] = weight_init_std * np.random.randn(
+            filter_num, input_channel, filter_size, filter_size
+        ) * np.sqrt(2.0 / (input_channel * filter_size * filter_size))
+        self.params['b1'] = np.zeros(filter_num)
 
         # 全結合層のパラメータ初期化
-        fc_input_size = filter_num[-1] * conv_output_h * conv_output_w
+        fc_input_size = filter_num * pool_output_h * pool_output_w
 
-        self.params['W_fc1'] = weight_init_std * np.random.randn(
+        self.params['W2'] = weight_init_std * np.random.randn(
             fc_input_size, hidden_size
         ) * np.sqrt(2.0 / fc_input_size)
-        self.params['b_fc1'] = np.zeros(hidden_size)
+        self.params['b2'] = np.zeros(hidden_size)
 
-        self.params['W_fc2'] = weight_init_std * np.random.randn(
+        self.params['W3'] = weight_init_std * np.random.randn(
             hidden_size, output_size
         ) * np.sqrt(2.0 / hidden_size)
-        self.params['b_fc2'] = np.zeros(output_size)
+        self.params['b3'] = np.zeros(output_size)
 
         # レイヤーの生成
-        self.layers: OrderedDict[str, Convolution | Relu | Pooling | Affine | Dropout] = OrderedDict()
+        self.layers: OrderedDict[str, Convolution | Relu | Pooling | Affine] = OrderedDict()
 
-        # (Conv -> ReLU -> Conv -> ReLU -> Pooling) * 3
-        for block_idx in range(3):
-            # Conv -> ReLU (1st conv in block)
-            layer_idx = block_idx * 2 + 1
-            self.layers[f'Conv{layer_idx}'] = Convolution(
-                self.params[f'W_conv{layer_idx}'],
-                self.params[f'b_conv{layer_idx}'],
-                stride=filter_stride,
-                pad=filter_pad
-            )
-            self.layers[f'Relu{layer_idx}'] = Relu()
+        # Conv -> ReLU -> Pooling
+        self.layers['Conv1'] = Convolution(
+            self.params['W1'],
+            self.params['b1'],
+            stride=filter_stride,
+            pad=filter_pad
+        )
+        self.layers['Relu1'] = Relu()
+        self.layers['Pool1'] = Pooling(pool_h=2, pool_w=2, stride=2, pad=0)
 
-            # Conv -> ReLU (2nd conv in block)
-            layer_idx = block_idx * 2 + 2
-            self.layers[f'Conv{layer_idx}'] = Convolution(
-                self.params[f'W_conv{layer_idx}'],
-                self.params[f'b_conv{layer_idx}'],
-                stride=filter_stride,
-                pad=filter_pad
-            )
-            self.layers[f'Relu{layer_idx}'] = Relu()
+        # Affine -> ReLU
+        self.layers['Affine1'] = Affine(self.params['W2'], self.params['b2'])
+        self.layers['Relu2'] = Relu()
 
-            # Pooling
-            self.layers[f'Pool{block_idx + 1}'] = Pooling(
-                pool_h=2, pool_w=2, stride=2, pad=0
-            )
-
-        # Affine -> ReLU -> Dropout
-        self.layers['Affine1'] = Affine(self.params['W_fc1'], self.params['b_fc1'])
-        self.layers['Relu_fc1'] = Relu()
-        self.layers['Dropout1'] = Dropout(dropout_ratio=dropout_ratio)
-
-        # Affine -> Dropout
-        self.layers['Affine2'] = Affine(self.params['W_fc2'], self.params['b_fc2'])
-        self.layers['Dropout2'] = Dropout(dropout_ratio=dropout_ratio)
+        # Affine
+        self.layers['Affine2'] = Affine(self.params['W3'], self.params['b3'])
 
         self.last_layer = SoftmaxWithLoss()
 
@@ -165,11 +129,7 @@ class SimpleCNN:
                 self.pool_output_shape = x.shape  # backward用に保存
                 x = x.reshape(x.shape[0], -1)
 
-            # Dropout層は train_flg を渡す
-            if isinstance(layer, Dropout):
-                x = layer.forward(x, train_flg)
-            else:
-                x = layer.forward(x)
+            x = layer.forward(x)
 
             # 計算グラフに記録
             if recorder.enabled:
@@ -271,20 +231,24 @@ class SimpleCNN:
         # 勾配を取得
         grads: dict[str, np.ndarray] = {}
 
-        # 畳み込み層の勾配
-        for i in range(1, 7):  # Conv1〜Conv6
-            conv_layer = self.layers[f'Conv{i}']
-            assert isinstance(conv_layer, Convolution)
-            assert conv_layer.dW is not None and conv_layer.db is not None
-            grads[f'W_conv{i}'] = conv_layer.dW
-            grads[f'b_conv{i}'] = conv_layer.db
+        # Conv層の勾配
+        conv_layer = self.layers['Conv1']
+        assert isinstance(conv_layer, Convolution)
+        assert conv_layer.dW is not None and conv_layer.db is not None
+        grads['W1'] = conv_layer.dW
+        grads['b1'] = conv_layer.db
 
-        # 全結合層の勾配
-        for i in range(1, 3):  # Affine1, Affine2
-            affine_layer = self.layers[f'Affine{i}']
-            assert isinstance(affine_layer, Affine)
-            assert affine_layer.dW is not None and affine_layer.db is not None
-            grads[f'W_fc{i}'] = affine_layer.dW
-            grads[f'b_fc{i}'] = affine_layer.db
+        # Affine層の勾配
+        affine1_layer = self.layers['Affine1']
+        assert isinstance(affine1_layer, Affine)
+        assert affine1_layer.dW is not None and affine1_layer.db is not None
+        grads['W2'] = affine1_layer.dW
+        grads['b2'] = affine1_layer.db
+
+        affine2_layer = self.layers['Affine2']
+        assert isinstance(affine2_layer, Affine)
+        assert affine2_layer.dW is not None and affine2_layer.db is not None
+        grads['W3'] = affine2_layer.dW
+        grads['b3'] = affine2_layer.db
 
         return grads

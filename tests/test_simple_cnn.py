@@ -16,14 +16,13 @@ def test_cnn_construction():
     cnn = SimpleCNN(
         input_dim=(1, 28, 28),
         conv_param={
-            'filter_num': [16, 32, 64],
-            'filter_size': 3,
-            'pad': 1,
+            'filter_num': 16,
+            'filter_size': 5,
+            'pad': 0,
             'stride': 1
         },
         hidden_size=100,
-        output_size=10,
-        dropout_ratio=0.5
+        output_size=10
     )
 
     print(f"✓ CNN model created successfully")
@@ -38,9 +37,9 @@ def test_cnn_forward():
     cnn = SimpleCNN(
         input_dim=(1, 28, 28),
         conv_param={
-            'filter_num': [16, 32, 64],
-            'filter_size': 3,
-            'pad': 1,
+            'filter_num': 16,
+            'filter_size': 5,
+            'pad': 0,
             'stride': 1
         },
         hidden_size=100,
@@ -68,9 +67,9 @@ def test_cnn_backward():
     cnn = SimpleCNN(
         input_dim=(1, 28, 28),
         conv_param={
-            'filter_num': [16, 32, 64],
-            'filter_size': 3,
-            'pad': 1,
+            'filter_num': 16,
+            'filter_size': 5,
+            'pad': 0,
             'stride': 1
         },
         hidden_size=50,
@@ -103,9 +102,9 @@ def test_cnn_loss_and_accuracy():
     cnn = SimpleCNN(
         input_dim=(1, 28, 28),
         conv_param={
-            'filter_num': [16, 32, 64],
-            'filter_size': 3,
-            'pad': 1,
+            'filter_num': 16,
+            'filter_size': 5,
+            'pad': 0,
             'stride': 1
         },
         hidden_size=50,
@@ -137,9 +136,9 @@ def test_different_input_sizes():
     cnn = SimpleCNN(
         input_dim=(3, 32, 32),  # RGB画像
         conv_param={
-            'filter_num': [16, 32, 64],
-            'filter_size': 3,
-            'pad': 1,
+            'filter_num': 16,
+            'filter_size': 5,
+            'pad': 0,
             'stride': 1
         },
         hidden_size=100,

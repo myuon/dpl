@@ -46,12 +46,7 @@ plt.show()
 # %%
 # データの前処理とトレーニング準備
 import time
-import importlib
-import n_layer_net
-importlib.reload(n_layer_net)
-from n_layer_net import NLayerNet
 from optimizers.adam import Adam
-from weight_init import he_weight_init
 from computational_graph import get_global_recorder
 
 # データを numpy 配列に変換し、正規化
@@ -65,8 +60,12 @@ X_array = X_array.astype(np.float64) / 255.0
 y_array = y_array.astype(np.int64)
 
 # train/test 分割 (最初の60000をtrain、残りをtest)
-X_train, X_test = X_array[:60000], X_array[60000:]
+X_train_flat, X_test_flat = X_array[:60000], X_array[60000:]
 y_train, y_test = y_array[:60000], y_array[60000:]
+
+# CNNのために4次元に変形 (N, C, H, W)
+X_train = X_train_flat.reshape(-1, 1, 28, 28)
+X_test = X_test_flat.reshape(-1, 1, 28, 28)
 
 print(f"Training data: {X_train.shape}, Test data: {X_test.shape}")
 
@@ -151,20 +150,29 @@ def train_network(
 
 
 # %%
-# ニューラルネットワークの学習（Batch Normalizationあり）
+# CNNの学習（軽量版: Conv -> ReLU -> Pooling -> Affine -> ReLU -> Affine -> Softmax）
+import importlib
+import simple_cnn
+importlib.reload(simple_cnn)
+from simple_cnn import SimpleCNN
+
 batch_size = 100
 iters = 10000
 
 print("=" * 50)
-print("Training with Batch Normalization")
+print("Training SimpleCNN")
 print("=" * 50)
-network = NLayerNet(
-    input_size=784,
-    hidden_size=50,
-    output_size=10,
-    hidden_layer_num=4,
-    weight_initializer=he_weight_init(),
-    use_batchnorm=True,
+
+network = SimpleCNN(
+    input_dim=(1, 28, 28),
+    conv_param={
+        'filter_num': 16,
+        'filter_size': 5,
+        'pad': 0,
+        'stride': 1
+    },
+    hidden_size=100,
+    output_size=10
 )
 optimizer = Adam(lr=0.001)
 train_acc_list, test_acc_list, iter_loss_list = train_network(
@@ -197,39 +205,9 @@ plt.tight_layout()
 plt.show()
 
 # %%
-# 各層の活性化値のヒストグラムを可視化
-# テストデータの一部を使って活性化値を記録
-sample_size = 1000
-x_sample = X_test[:sample_size]
-
-# 活性化値を記録しながら予測
-network.predict(x_sample, record_activations=True)
-
-# ReLU層の活性化値のみを抽出
-relu_activations = {
-    name: activations
-    for name, activations in network.activations.items()
-    if "Relu" in name
-}
-
-# ヒストグラムを描画
-num_layers = len(relu_activations)
-fig, axes = plt.subplots(1, num_layers, figsize=(5 * num_layers, 4))
-
-# 1層の場合はaxesをリストに変換
-if num_layers == 1:
-    axes = [axes]
-
-for idx, (layer_name, activations) in enumerate(relu_activations.items()):
-    ax = axes[idx]
-    ax.hist(activations.flatten(), bins=50, alpha=0.7, color="blue", edgecolor="black")
-    ax.set_xlabel("Activation value")
-    ax.set_ylabel("Frequency")
-    ax.set_title(f"{layer_name} Activation Distribution")
-    ax.grid(True, alpha=0.3)
-
-plt.tight_layout()
-plt.show()
+# CNNでは活性化値の可視化は省略
+# （SimpleCNNにはrecord_activations機能が実装されていません）
+print("Skipping activation visualization for CNN model")
 
 # %%
 # 計算グラフの可視化
