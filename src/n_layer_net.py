@@ -5,6 +5,7 @@ from layers.affine import Affine
 from layers.relu import Relu
 from layers.batch_normalization import BatchNormalization
 from layers.softmax_with_loss import SoftmaxWithLoss
+from computational_graph import get_global_recorder
 
 
 class NLayerNet:
@@ -70,29 +71,33 @@ class NLayerNet:
                 self.params[f"beta{i}"] = np.zeros(hidden_size)
 
         # レイヤーの生成
-        self.layers: OrderedDict[str, Affine | Relu | BatchNormalization] = OrderedDict()
+        self.layers: OrderedDict[str, Affine | Relu | BatchNormalization] = (
+            OrderedDict()
+        )
 
         # 隠れ層の構築（Affine + [BatchNorm] + ReLU）
         for i in range(1, hidden_layer_num + 1):
-            self.layers[f"Affine{i}"] = Affine(self.params[f"W{i}"], self.params[f"b{i}"])
+            self.layers[f"Affine{i}"] = Affine(
+                self.params[f"W{i}"], self.params[f"b{i}"]
+            )
 
             if use_batchnorm:
                 self.layers[f"BatchNorm{i}"] = BatchNormalization(
-                    self.params[f"gamma{i}"],
-                    self.params[f"beta{i}"]
+                    self.params[f"gamma{i}"], self.params[f"beta{i}"]
                 )
 
             self.layers[f"Relu{i}"] = Relu()
 
         # 出力層（Affineのみ）
         self.layers[f"Affine{final_layer_idx}"] = Affine(
-            self.params[f"W{final_layer_idx}"],
-            self.params[f"b{final_layer_idx}"]
+            self.params[f"W{final_layer_idx}"], self.params[f"b{final_layer_idx}"]
         )
 
         self.last_layer = SoftmaxWithLoss()
 
-    def predict(self, x: np.ndarray, record_activations: bool = False, train_flg: bool = False) -> np.ndarray:
+    def predict(
+        self, x: np.ndarray, record_activations: bool = False, train_flg: bool = False
+    ) -> np.ndarray:
         """予測を実行
 
         Args:
@@ -106,11 +111,28 @@ class NLayerNet:
         if record_activations:
             self.activations: dict[str, np.ndarray] = {}
 
+        recorder = get_global_recorder()
+
+        # 入力ノードを記録
+        prev_node = -1
+        if recorder.enabled:
+            prev_node = recorder.add_node("Input", shape=x.shape, node_type="data")
+
         for layer_name, layer in self.layers.items():
+            # レイヤーのforward処理
             if isinstance(layer, BatchNormalization):
                 x = layer.forward(x, train_flg)
             else:
                 x = layer.forward(x)
+
+            # 計算グラフに記録
+            if recorder.enabled:
+                current_node = recorder.add_node(
+                    layer_name, shape=x.shape, node_type="operation"
+                )
+                recorder.add_edge(prev_node, current_node, edge_type="forward")
+                prev_node = current_node
+
             if record_activations:
                 self.activations[layer_name] = x.copy()
 
@@ -118,7 +140,7 @@ class NLayerNet:
 
     def loss(self, x: np.ndarray, t: np.ndarray) -> float:
         y = self.predict(x, train_flg=True)
-        return self.last_layer.forward(y, t)
+        return float(self.last_layer.forward(y, t))
 
     def accuracy(self, x: np.ndarray, t: np.ndarray) -> float:
         y = self.predict(x, train_flg=False)
@@ -126,19 +148,44 @@ class NLayerNet:
         t_label = np.argmax(t, axis=1) if t.ndim != 1 else t
 
         accuracy = np.sum(y_pred == t_label) / float(x.shape[0])
-        return accuracy
+        return float(accuracy)
 
     def gradient(self, x: np.ndarray, t: np.ndarray) -> dict[str, np.ndarray]:
         # forward
         self.loss(x, t)
 
+        recorder = get_global_recorder()
+
         # backward
         dout_val = self.last_layer.backward(1.0)
 
+        # 計算グラフに損失関数ノードを追加
+        loss_node = -1
+        if recorder.enabled:
+            loss_node = recorder.add_node(
+                "SoftmaxWithLoss", shape=dout_val.shape, node_type="operation"
+            )
+
         layers_list = list(self.layers.values())
+        layer_names = list(self.layers.keys())
         layers_list.reverse()
-        for layer in layers_list:
+        layer_names.reverse()
+
+        # backwardの記録用
+        prev_node = loss_node
+
+        for layer_name, layer in zip(layer_names, layers_list):
             dout_val = layer.backward(dout_val)
+
+            # 計算グラフに記録（backward）
+            if recorder.enabled:
+                current_node = recorder.add_node(
+                    f"{layer_name}_backward",
+                    shape=dout_val.shape,
+                    node_type="operation",
+                )
+                recorder.add_edge(prev_node, current_node, edge_type="backward")
+                prev_node = current_node
 
         # 勾配を取得
         grads: dict[str, np.ndarray] = {}

@@ -52,6 +52,7 @@ importlib.reload(n_layer_net)
 from n_layer_net import NLayerNet
 from optimizers.adam import Adam
 from weight_init import he_weight_init
+from computational_graph import get_global_recorder
 
 # データを numpy 配列に変換し、正規化
 X_array = X.values if hasattr(X, "values") else X
@@ -150,32 +151,14 @@ def train_network(
 
 
 # %%
-# Batch Normalizationの比較実験
+# ニューラルネットワークの学習（Batch Normalizationあり）
 batch_size = 100
 iters = 10000
 
-# 1. Batch Normalizationなし
 print("=" * 50)
-print("Training WITHOUT Batch Normalization")
+print("Training with Batch Normalization")
 print("=" * 50)
-network_without_bn = NLayerNet(
-    input_size=784,
-    hidden_size=50,
-    output_size=10,
-    hidden_layer_num=4,
-    weight_initializer=he_weight_init(),
-    use_batchnorm=False,
-)
-optimizer_without_bn = Adam(lr=0.001)
-train_acc_without_bn, test_acc_without_bn, iter_loss_without_bn = train_network(
-    network_without_bn, X_train, y_train, X_test, y_test, optimizer_without_bn, batch_size, iters
-)
-
-# 2. Batch Normalizationあり
-print("\n" + "=" * 50)
-print("Training WITH Batch Normalization")
-print("=" * 50)
-network_with_bn = NLayerNet(
+network = NLayerNet(
     input_size=784,
     hidden_size=50,
     output_size=10,
@@ -183,38 +166,30 @@ network_with_bn = NLayerNet(
     weight_initializer=he_weight_init(),
     use_batchnorm=True,
 )
-optimizer_with_bn = Adam(lr=0.001)
-train_acc_with_bn, test_acc_with_bn, iter_loss_with_bn = train_network(
-    network_with_bn, X_train, y_train, X_test, y_test, optimizer_with_bn, batch_size, iters
+optimizer = Adam(lr=0.001)
+train_acc_list, test_acc_list, iter_loss_list = train_network(
+    network, X_train, y_train, X_test, y_test, optimizer, batch_size, iters
 )
 
-# 最後に学習したネットワークを保持（活性化値の可視化用）
-network = network_with_bn
-train_acc_list = train_acc_with_bn
-test_acc_list = test_acc_with_bn
-iter_loss_list = iter_loss_with_bn
-
 # %%
-# Batch Normalizationの比較可視化
+# 学習結果の可視化
 fig, axes = plt.subplots(1, 2, figsize=(15, 5))
 
 # 左: Lossの推移（イテレーションごと）
-iterations = np.arange(len(iter_loss_without_bn))
-axes[0].plot(iterations, iter_loss_without_bn, label="Without BatchNorm", color="blue", alpha=0.7)
-axes[0].plot(iterations, iter_loss_with_bn, label="With BatchNorm", color="red", alpha=0.7)
+iterations = np.arange(len(iter_loss_list))
+axes[0].plot(iterations, iter_loss_list, color="blue", alpha=0.7)
 axes[0].set_xlabel("Iteration")
 axes[0].set_ylabel("Loss")
-axes[0].set_title("Training Loss Comparison")
-axes[0].legend()
+axes[0].set_title("Training Loss")
 axes[0].grid(True)
 
-# 右: テスト精度の推移（エポックごと）
-epochs = np.arange(len(test_acc_without_bn))
-axes[1].plot(epochs, test_acc_without_bn, label="Without BatchNorm", color="blue", marker="o", alpha=0.7)
-axes[1].plot(epochs, test_acc_with_bn, label="With BatchNorm", color="red", marker="s", alpha=0.7)
+# 右: 精度の推移（エポックごと）
+epochs = np.arange(len(train_acc_list))
+axes[1].plot(epochs, train_acc_list, label="Train Accuracy", color="blue", marker="o", alpha=0.7)
+axes[1].plot(epochs, test_acc_list, label="Test Accuracy", color="red", marker="s", alpha=0.7)
 axes[1].set_xlabel("Epoch")
-axes[1].set_ylabel("Test Accuracy")
-axes[1].set_title("Test Accuracy Comparison")
+axes[1].set_ylabel("Accuracy")
+axes[1].set_title("Accuracy")
 axes[1].legend()
 axes[1].grid(True)
 
@@ -255,3 +230,71 @@ for idx, (layer_name, activations) in enumerate(relu_activations.items()):
 
 plt.tight_layout()
 plt.show()
+
+# %%
+# 計算グラフの可視化
+# 小さなバッチで計算グラフを記録
+print("=" * 50)
+print("Recording computational graph...")
+print("=" * 50)
+
+# 計算グラフの記録を有効化
+recorder = get_global_recorder()
+recorder.enable()
+
+# 小さなバッチで1回だけforward + backwardを実行
+x_small_batch = X_train[:5]
+y_small_batch = y_train[:5]
+grads_for_graph = network.gradient(x_small_batch, y_small_batch)
+
+# 記録を無効化
+recorder.disable()
+
+# 画像として生成してmatplotlibで表示（graphvizがインストールされている場合）
+try:
+    import subprocess
+    import tempfile
+    import os
+    from PIL import Image
+
+    # 一時的にDOTファイルを作成
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".dot", delete=False) as dot_f:
+        dot_f.write(recorder.to_dot(direction="TB"))
+        dot_file = dot_f.name
+
+    # 一時的なPNGファイルを作成
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as png_f:
+        png_file = png_f.name
+
+    try:
+        # dotコマンドで画像に変換
+        subprocess.run(["dot", "-Tpng", dot_file, "-o", png_file], check=True)
+
+        # 画像を読み込んでmatplotlibで表示
+        img = Image.open(png_file)
+        fig, ax = plt.subplots(figsize=(20, 12))
+        ax.imshow(img)
+        ax.axis("off")
+        ax.set_title("Computational Graph (Forward: black, Backward: red)", fontsize=16)
+        plt.tight_layout()
+        plt.show()
+
+        print("\nComputational graph displayed successfully!")
+
+    finally:
+        # 一時ファイルを削除
+        os.unlink(dot_file)
+        os.unlink(png_file)
+
+except FileNotFoundError:
+    print("\nGraphviz is not installed. Please install it to visualize the computational graph:")
+    print("  macOS: brew install graphviz")
+    print("  Ubuntu/Debian: sudo apt-get install graphviz")
+except ImportError:
+    print("\nPillow is not installed. Please install it to display the graph:")
+    print("  pip install pillow")
+except Exception as e:
+    print(f"\nFailed to visualize computational graph: {e}")
+
+# 記録をクリア
+recorder.clear()
