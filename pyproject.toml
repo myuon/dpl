@@ -13,3 +13,7 @@ dependencies = [
     "pytest>=9.0.1",
     "scikit-learn>=1.7.2",
 ]
+
+[tool.mypy]
+mypy_path = "src"
+explicit_package_bases = true
