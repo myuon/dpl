@@ -65,8 +65,8 @@ class Pooling:
                 x_max = x_idx + self.stride * out_w
                 col[:, :, y, x_idx, :, :] = x_pad[:, :, y:y_max:self.stride, x_idx:x_max:self.stride]
 
-        # (N, C, pool_h, pool_w, out_h, out_w) -> (N*C*out_h*out_w, pool_h*pool_w)
-        col = col.transpose(0, 1, 4, 5, 2, 3).reshape(-1, self.pool_h * self.pool_w)
+        # (N, C, pool_h, pool_w, out_h, out_w) -> (N*out_h*out_w*C, pool_h*pool_w)
+        col = col.transpose(0, 4, 5, 1, 2, 3).reshape(-1, self.pool_h * self.pool_w)
 
         # 最大値のインデックスを保存（backward用）
         arg_max = np.argmax(col, axis=1)
@@ -74,8 +74,8 @@ class Pooling:
         # 最大値を取得
         out = np.max(col, axis=1)
 
-        # 形状を整形 (N*C*out_h*out_w,) -> (N, C, out_h, out_w)
-        out = out.reshape(N, C, out_h, out_w)
+        # 形状を整形 (N*out_h*out_w*C,) -> (N, out_h, out_w, C) -> (N, C, out_h, out_w)
+        out = out.reshape(N, out_h, out_w, C).transpose(0, 3, 1, 2)
 
         # backward用に保存
         self.x = x
@@ -98,17 +98,17 @@ class Pooling:
         N, C, H, W = self.x.shape
         out_h, out_w = dout.shape[2], dout.shape[3]
 
-        # doutを1次元に変換 (N*C*out_h*out_w,)
-        dout_flat = dout.reshape(-1)
+        # (N, C, out_h, out_w) -> (N, out_h, out_w, C) -> (N*out_h*out_w*C,)
+        dout_flat = dout.transpose(0, 2, 3, 1).reshape(-1)
 
-        # 勾配の分配用の配列 (N*C*out_h*out_w, pool_h*pool_w)
+        # 勾配の分配用の配列 (N*out_h*out_w*C, pool_h*pool_w)
         dmax = np.zeros((dout_flat.size, self.pool_h * self.pool_w))
 
         # 最大値だった位置にだけ勾配を流す
         dmax[np.arange(self.arg_max.size), self.arg_max] = dout_flat
 
-        # (N*C*out_h*out_w, pool_h*pool_w) -> (N, C, out_h, out_w, pool_h, pool_w)
-        dmax = dmax.reshape(N, C, out_h, out_w, self.pool_h, self.pool_w)
+        # (N*out_h*out_w*C, pool_h*pool_w) -> (N, out_h, out_w, C, pool_h, pool_w)
+        dmax = dmax.reshape(N, out_h, out_w, C, self.pool_h, self.pool_w)
 
         # col2im的な逆変換
         # パディングを含む入力サイズ
@@ -118,7 +118,9 @@ class Pooling:
             y_max = y + self.stride * out_h
             for x in range(self.pool_w):
                 x_max = x + self.stride * out_w
-                dx[:, :, y:y_max:self.stride, x:x_max:self.stride] += dmax[:, :, :, :, y, x]
+                # dmax: (N, out_h, out_w, C, pool_h, pool_w)
+                # dx: (N, C, H, W) なので、transposeして次元を合わせる
+                dx[:, :, y:y_max:self.stride, x:x_max:self.stride] += dmax[:, :, :, :, y, x].transpose(0, 3, 1, 2)
 
         # パディング部分を除去
         if self.pad > 0:
