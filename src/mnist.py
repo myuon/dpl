@@ -110,6 +110,7 @@ def train_network(
     print(f"Starting training...")
     print(f"Batch size: {batch_size}, Iterations: {iters}")
     print(f"Iterations per epoch: {iter_per_epoch}")
+    print(f"Max epochs: {iters // iter_per_epoch}")
 
     start_time = time.time()
 
@@ -153,11 +154,12 @@ def train_network(
 # CNNの学習（軽量版: Conv -> ReLU -> Pooling -> Affine -> ReLU -> Affine -> Softmax）
 import importlib
 import simple_cnn
+
 importlib.reload(simple_cnn)
 from simple_cnn import SimpleCNN
 
-batch_size = 100
-iters = 10000
+batch_size = 50
+iters = 3000
 
 print("=" * 50)
 print("Training SimpleCNN")
@@ -165,19 +167,21 @@ print("=" * 50)
 
 network = SimpleCNN(
     input_dim=(1, 28, 28),
-    conv_param={
-        'filter_num': 16,
-        'filter_size': 5,
-        'pad': 0,
-        'stride': 1
-    },
+    conv_param={"filter_num": 16, "filter_size": 5, "pad": 0, "stride": 1},
     hidden_size=100,
-    output_size=10
+    output_size=10,
 )
+
+# 学習前のフィルター重みを保存
+initial_filters = network.params["W1"].copy()
+
 optimizer = Adam(lr=0.001)
 train_acc_list, test_acc_list, iter_loss_list = train_network(
     network, X_train, y_train, X_test, y_test, optimizer, batch_size, iters
 )
+
+# 学習後のフィルター重みを取得
+final_filters = network.params["W1"]
 
 # %%
 # 学習結果の可視化
@@ -193,8 +197,12 @@ axes[0].grid(True)
 
 # 右: 精度の推移（エポックごと）
 epochs = np.arange(len(train_acc_list))
-axes[1].plot(epochs, train_acc_list, label="Train Accuracy", color="blue", marker="o", alpha=0.7)
-axes[1].plot(epochs, test_acc_list, label="Test Accuracy", color="red", marker="s", alpha=0.7)
+axes[1].plot(
+    epochs, train_acc_list, label="Train Accuracy", color="blue", marker="o", alpha=0.7
+)
+axes[1].plot(
+    epochs, test_acc_list, label="Test Accuracy", color="red", marker="s", alpha=0.7
+)
 axes[1].set_xlabel("Epoch")
 axes[1].set_ylabel("Accuracy")
 axes[1].set_title("Accuracy")
@@ -203,6 +211,54 @@ axes[1].grid(True)
 
 plt.tight_layout()
 plt.show()
+
+# %%
+# フィルター重みの可視化（学習前と学習後）
+print("=" * 50)
+print("Visualizing Conv Layer Filters")
+print("=" * 50)
+
+# フィルターは (filter_num, input_channel, filter_h, filter_w) = (16, 1, 5, 5)
+filter_num = initial_filters.shape[0]
+
+# 4x8のグリッドで16個のフィルターを表示（左側4x4: 学習前、右側4x4: 学習後）
+fig, axes = plt.subplots(4, 8, figsize=(16, 8))
+fig.suptitle(
+    "Conv Layer Filters: Before Training (left) vs After Training (right)", fontsize=16
+)
+
+for i in range(filter_num):
+    row = i // 4
+    col = i % 4
+
+    # 学習前のフィルター (左側4x4)
+    ax_before = axes[row, col]
+    filter_before = initial_filters[i, 0]  # (5, 5)
+    ax_before.imshow(filter_before, cmap="gray", interpolation="nearest")
+    ax_before.set_title(f"Filter {i+1}\nBefore", fontsize=8)
+    ax_before.axis("off")
+
+    # 学習後のフィルター (右側4x4)
+    ax_after = axes[row, col + 4]
+    filter_after = final_filters[i, 0]  # (5, 5)
+    ax_after.imshow(filter_after, cmap="gray", interpolation="nearest")
+    ax_after.set_title(f"Filter {i+1}\nAfter", fontsize=8)
+    ax_after.axis("off")
+
+plt.tight_layout()
+plt.show()
+
+# フィルターの統計情報を表示
+print(f"\nFilter statistics:")
+print(
+    f"Before training - min: {initial_filters.min():.4f}, max: {initial_filters.max():.4f}, mean: {initial_filters.mean():.4f}, std: {initial_filters.std():.4f}"
+)
+print(
+    f"After training  - min: {final_filters.min():.4f}, max: {final_filters.max():.4f}, mean: {final_filters.mean():.4f}, std: {final_filters.std():.4f}"
+)
+print(
+    f"Weight change   - L2 norm: {np.linalg.norm(final_filters - initial_filters):.4f}"
+)
 
 # %%
 # CNNでは活性化値の可視化は省略
@@ -265,7 +321,9 @@ try:
         os.unlink(png_file)
 
 except FileNotFoundError:
-    print("\nGraphviz is not installed. Please install it to visualize the computational graph:")
+    print(
+        "\nGraphviz is not installed. Please install it to visualize the computational graph:"
+    )
     print("  macOS: brew install graphviz")
     print("  Ubuntu/Debian: sudo apt-get install graphviz")
 except ImportError:

@@ -1,5 +1,7 @@
 import numpy as np
 
+from src.layers.convolution import im2col
+
 
 class Pooling:
     """プーリング層（Max Pooling）
@@ -11,13 +13,7 @@ class Pooling:
     チャンネル数は変わらず、空間方向のサイズだけが縮小される。
     """
 
-    def __init__(
-        self,
-        pool_h: int,
-        pool_w: int,
-        stride: int = 1,
-        pad: int = 0
-    ) -> None:
+    def __init__(self, pool_h: int, pool_w: int, stride: int = 1, pad: int = 0) -> None:
         """
         Args:
             pool_h: プーリング領域の高さ
@@ -49,30 +45,14 @@ class Pooling:
         out_h = (H + 2 * self.pad - self.pool_h) // self.stride + 1
         out_w = (W + 2 * self.pad - self.pool_w) // self.stride + 1
 
-        # パディング
-        if self.pad > 0:
-            x_pad = np.pad(x, [(0, 0), (0, 0), (self.pad, self.pad), (self.pad, self.pad)], 'constant')
-        else:
-            x_pad = x
+        # im2colとreshapeを一度に実行
+        col = im2col(x, self.pool_h, self.pool_w, self.stride, self.pad).reshape(
+            -1, self.pool_h * self.pool_w
+        )
 
-        # im2col的な変換（プーリング用）
-        # (N, C, H, W) -> (N*C*out_h*out_w, pool_h*pool_w)
-        col = np.zeros((N, C, self.pool_h, self.pool_w, out_h, out_w))
-
-        for y in range(self.pool_h):
-            y_max = y + self.stride * out_h
-            for x_idx in range(self.pool_w):
-                x_max = x_idx + self.stride * out_w
-                col[:, :, y, x_idx, :, :] = x_pad[:, :, y:y_max:self.stride, x_idx:x_max:self.stride]
-
-        # (N, C, pool_h, pool_w, out_h, out_w) -> (N*out_h*out_w*C, pool_h*pool_w)
-        col = col.transpose(0, 4, 5, 1, 2, 3).reshape(-1, self.pool_h * self.pool_w)
-
-        # 最大値のインデックスを保存（backward用）
+        # argmaxとmaxを統合: argmaxの結果を使ってmaxの値を取得
         arg_max = np.argmax(col, axis=1)
-
-        # 最大値を取得
-        out = np.max(col, axis=1)
+        out = col[np.arange(col.shape[0]), arg_max]
 
         # 形状を整形 (N*out_h*out_w*C,) -> (N, out_h, out_w, C) -> (N, C, out_h, out_w)
         out = out.reshape(N, out_h, out_w, C).transpose(0, 3, 1, 2)
@@ -112,7 +92,14 @@ class Pooling:
 
         # col2im的な逆変換
         # パディングを含む入力サイズ
-        dx = np.zeros((N, C, H + 2 * self.pad + self.stride - 1, W + 2 * self.pad + self.stride - 1))
+        dx = np.zeros(
+            (
+                N,
+                C,
+                H + 2 * self.pad + self.stride - 1,
+                W + 2 * self.pad + self.stride - 1,
+            )
+        )
 
         for y in range(self.pool_h):
             y_max = y + self.stride * out_h
@@ -120,11 +107,13 @@ class Pooling:
                 x_max = x + self.stride * out_w
                 # dmax: (N, out_h, out_w, C, pool_h, pool_w)
                 # dx: (N, C, H, W) なので、transposeして次元を合わせる
-                dx[:, :, y:y_max:self.stride, x:x_max:self.stride] += dmax[:, :, :, :, y, x].transpose(0, 3, 1, 2)
+                dx[:, :, y : y_max : self.stride, x : x_max : self.stride] += dmax[
+                    :, :, :, :, y, x
+                ].transpose(0, 3, 1, 2)
 
         # パディング部分を除去
         if self.pad > 0:
-            dx = dx[:, :, self.pad:H + self.pad, self.pad:W + self.pad]
+            dx = dx[:, :, self.pad : H + self.pad, self.pad : W + self.pad]
         else:
             dx = dx[:, :, :H, :W]
 
