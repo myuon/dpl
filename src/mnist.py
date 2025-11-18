@@ -79,8 +79,8 @@ def train_network(
     X_test,
     y_test,
     optimizer,
-    batch_size=100,
-    iters=10000,
+    batch_size,
+    epochs,
 ):
     """ニューラルネットワークを学習する
 
@@ -103,18 +103,18 @@ def train_network(
     test_acc_list = []
     iter_loss_list = []  # イテレーションごとのloss
 
-    # 1エポックあたりのイテレーション数
     iter_per_epoch = max(X_train.shape[0] // batch_size, 1)
+    max_iters = epochs * iter_per_epoch
 
     # 学習を実行
     print(f"Starting training...")
-    print(f"Batch size: {batch_size}, Iterations: {iters}")
+    print(f"Batch size: {batch_size}, Epochs: {epochs}")
     print(f"Iterations per epoch: {iter_per_epoch}")
-    print(f"Max epochs: {iters // iter_per_epoch}")
+    print(f"Max epochs: {epochs}")
 
     start_time = time.time()
 
-    for i in range(iters):
+    for i in range(max_iters):
         # ミニバッチの取得
         batch_mask = np.random.choice(X_train.shape[0], batch_size)
         x_batch = X_train[batch_mask]
@@ -158,8 +158,8 @@ import simple_cnn
 importlib.reload(simple_cnn)
 from simple_cnn import SimpleCNN
 
-batch_size = 50
-iters = 3000
+batch_size = 500
+epochs = 15
 
 print("=" * 50)
 print("Training SimpleCNN")
@@ -177,7 +177,7 @@ initial_filters = network.params["W1"].copy()
 
 optimizer = Adam(lr=0.001)
 train_acc_list, test_acc_list, iter_loss_list = train_network(
-    network, X_train, y_train, X_test, y_test, optimizer, batch_size, iters
+    network, X_train, y_train, X_test, y_test, optimizer, batch_size, epochs
 )
 
 # 学習後のフィルター重みを取得
