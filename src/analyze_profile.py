@@ -2,12 +2,16 @@
 cProfileの結果を分析するスクリプト
 
 Usage:
-    python analyze_profile.py [profile_file]
+    python analyze_profile.py [profile_file] [--flamegraph]
+
+Options:
+    --flamegraph: Generate flamegraph visualization (requires flameprof or snakeviz)
 """
 
 import pstats
 import sys
 from pathlib import Path
+import subprocess
 
 
 def analyze_profile(profile_file: str = "main.prof") -> None:
@@ -105,11 +109,95 @@ def analyze_profile(profile_file: str = "main.prof") -> None:
         print(f"{func_str:<60} {tt:>8.3f}s {nc:>9,} {pct:>6.1f}%")
 
 
-if __name__ == "__main__":
-    # コマンドライン引数からファイル名を取得
-    if len(sys.argv) > 1:
-        profile_file = sys.argv[1]
-    else:
-        profile_file = "main.prof"
+def generate_flamegraph(profile_file: str = "main.prof") -> None:
+    """Flamegraphを生成する
 
-    analyze_profile(profile_file)
+    Args:
+        profile_file: プロファイルファイルのパス
+    """
+    print("\n" + "=" * 80)
+    print("Generating Flamegraph")
+    print("=" * 80)
+
+    # snakevizを試す（インタラクティブなブラウザベース可視化）
+    try:
+        print("\nTrying snakeviz (interactive browser-based visualization)...")
+        print("This will open a browser window with the profile visualization.")
+        print("Press Ctrl+C to stop the server when done.")
+        subprocess.run(["snakeviz", profile_file], check=True)
+        return
+    except FileNotFoundError:
+        print("snakeviz not found. Install with: uv add snakeviz")
+    except subprocess.CalledProcessError:
+        print("snakeviz failed to run")
+    except KeyboardInterrupt:
+        print("\nsnakeviz server stopped")
+        return
+
+    # flameprofを試す（SVGのflamegraph生成）
+    try:
+        print("\nTrying flameprof (generates SVG flamegraph)...")
+        output_file = profile_file.replace('.prof', '_flamegraph.svg')
+        subprocess.run(
+            ["flameprof", profile_file, "-o", output_file],
+            check=True,
+            capture_output=True,
+            text=True
+        )
+        print(f"Flamegraph generated: {output_file}")
+        print("Open this file in a web browser to view the flamegraph.")
+        return
+    except FileNotFoundError:
+        print("flameprof not found. Install with: pip install flameprof")
+    except subprocess.CalledProcessError as e:
+        print(f"flameprof failed: {e}")
+
+    # gprof2dotとgraphvizを試す（コールグラフ生成）
+    try:
+        print("\nTrying gprof2dot + graphviz (generates call graph)...")
+        dot_output = profile_file.replace('.prof', '_callgraph.dot')
+        png_output = profile_file.replace('.prof', '_callgraph.png')
+
+        # pstatsをdot形式に変換
+        with open(dot_output, 'w') as f:
+            subprocess.run(
+                ["gprof2dot", "-f", "pstats", profile_file],
+                stdout=f,
+                check=True
+            )
+
+        # dotをPNGに変換
+        subprocess.run(
+            ["dot", "-Tpng", dot_output, "-o", png_output],
+            check=True
+        )
+        print(f"Call graph generated: {png_output}")
+        return
+    except FileNotFoundError:
+        print("gprof2dot or graphviz not found.")
+        print("Install with: pip install gprof2dot && brew install graphviz (macOS)")
+    except subprocess.CalledProcessError as e:
+        print(f"gprof2dot/graphviz failed: {e}")
+
+    print("\nNo visualization tools available. Please install one of:")
+    print("  - snakeviz: uv add snakeviz (recommended for interactive exploration)")
+    print("  - flameprof: pip install flameprof (generates flamegraph SVG)")
+    print("  - gprof2dot: pip install gprof2dot && brew install graphviz")
+
+
+if __name__ == "__main__":
+    # コマンドライン引数を解析
+    args = sys.argv[1:]
+    profile_file = "main.prof"
+    show_flamegraph = False
+
+    for arg in args:
+        if arg == "--flamegraph":
+            show_flamegraph = True
+        elif not arg.startswith("--"):
+            profile_file = arg
+
+    if show_flamegraph:
+        generate_flamegraph(profile_file)
+    else:
+        analyze_profile(profile_file)
