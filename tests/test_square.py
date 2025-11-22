@@ -12,11 +12,18 @@ from utils import as_nparray
 
 
 class Square(Function):
-    def forward(self, x: np.ndarray) -> np.ndarray:
-        return x ** 2
+    def apply(self, x: Variable) -> Variable:
+        result = super().__call__(x)
+        assert isinstance(result, Variable)
+        return result
 
-    def backward(self, gy: np.ndarray) -> np.ndarray:
-        x = self.input.data
+    def forward(self, *xs: np.ndarray) -> np.ndarray:
+        (x,) = xs
+        return x**2
+
+    def backward(self, *gys: np.ndarray) -> np.ndarray:
+        (gy,) = gys
+        x = self.inputs[0].data
         gx = 2 * x * gy
         return gx
 
@@ -89,7 +96,7 @@ class TestSquare:
 
         # 数値微分によるチェック
         def f(x_):
-            return np.sum(x_ ** 2 * dout)
+            return np.sum(x_**2 * dout)
 
         gx_num = numerical_gradient(f, x_data.copy())
 
@@ -112,7 +119,7 @@ class TestSquare:
 
         # 数値微分によるチェック
         def f(x_):
-            return np.sum(x_ ** 2 * dout)
+            return np.sum(x_**2 * dout)
 
         gx_num = numerical_gradient(f, x_data.copy())
 
@@ -127,7 +134,9 @@ class TestSquare:
 
         # dy/dx = 2x = 2 * 3 = 6
         expected_grad = 6.0
-        assert np.allclose(x.grad, expected_grad), f"gradient mismatch: {x.grad} vs {expected_grad}"
+        assert np.allclose(
+            x.grad, expected_grad
+        ), f"gradient mismatch: {x.grad} vs {expected_grad}"
 
     def test_backward_chain(self):
         """連鎖律を使った勾配計算のテスト (x^2)^2 = x^4"""
@@ -142,4 +151,6 @@ class TestSquare:
 
         # dz/dx = 4x^3 = 4 * 2^3 = 32
         expected_grad = 32.0
-        assert np.allclose(x.grad, expected_grad), f"gradient mismatch: {x.grad} vs {expected_grad}"
+        assert np.allclose(
+            x.grad, expected_grad
+        ), f"gradient mismatch: {x.grad} vs {expected_grad}"

@@ -15,23 +15,45 @@ class Variable:
         self.data = data
         self.grad: np.ndarray | None = None
         self.creator: "Function | None" = None
+        self.generation = 0
 
     def set_creator(self, func: "Function") -> None:
         self.creator = func
+        self.generation = func.generation + 1
 
     def backward(self) -> None:
         if self.grad is None:
             self.grad = np.ones_like(self.data)
 
-        if self.creator is None:
-            return
+        assert self.creator is not None
 
-        stack = [self.creator]
+        stack = []
+        visited = set()
+
+        def add_visited(f: Function) -> None:
+            if f not in visited:
+                stack.append(f)
+                visited.add(f)
+                stack.sort(key=lambda func: func.generation)
+
+        add_visited(self.creator)
+
         while stack:
             f = stack.pop()
-            x, y = f.input, f.output
-            assert y.grad is not None
-            x.grad = f.backward(y.grad)
+            gys = [output.grad for output in f.outputs]
+            gxs = f.backward(*gys)
+            if not isinstance(gxs, tuple):
+                gxs = (gxs,)
 
-            if x.creator is not None:
-                stack.append(x.creator)
+            assert len(gxs) == len(f.inputs)
+            for x, gx in zip(f.inputs, gxs):
+                if x.grad is None:
+                    x.grad = gx
+                else:
+                    x.grad = x.grad + gx
+
+                if x.creator is not None:
+                    add_visited(x.creator)
+
+    def cleargrad(self) -> None:
+        self.grad = None

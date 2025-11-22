@@ -4,17 +4,22 @@ from variable import Variable
 
 
 class Function:
-    def __call__(self, input):
-        x = input.data
-        y = self.forward(x)
-        output = Variable(as_nparray(y))
-        output.set_creator(self)
-        self.input = input
-        self.output = output
-        return output
+    def __call__(self, *inputs: Variable):
+        xs = [x.data for x in inputs]
+        ys = self.forward(*xs)
+        if not isinstance(ys, tuple):
+            ys = (ys,)
+        outputs = [Variable(as_nparray(y)) for y in ys]
 
-    def forward(self, x: np.ndarray) -> np.ndarray:
+        self.generation = max([x.generation for x in inputs])
+        for output in outputs:
+            output.set_creator(self)
+        self.inputs = inputs
+        self.outputs = outputs
+        return outputs if len(outputs) > 1 else outputs[0]
+
+    def forward(self, *xs: np.ndarray) -> np.ndarray:
         raise NotImplementedError()
 
-    def backward(self, gy: np.ndarray) -> np.ndarray:
+    def backward(self, *gys: np.ndarray) -> np.ndarray | tuple[np.ndarray, ...]:
         raise NotImplementedError()
