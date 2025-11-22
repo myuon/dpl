@@ -33,5 +33,5 @@ class Function:
     def forward(self, *xs: np.ndarray) -> np.ndarray:
         raise NotImplementedError()
 
-    def backward(self, *gys: np.ndarray) -> np.ndarray | tuple[np.ndarray, ...]:
+    def backward(self, *gys: "Variable") -> "Variable | tuple[Variable, ...]":
         raise NotImplementedError()

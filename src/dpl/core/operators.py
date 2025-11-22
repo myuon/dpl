@@ -15,7 +15,7 @@ class Add(Function):
         y = x0 + x1
         return y
 
-    def backward(self, *gys: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def backward(self, *gys: Variable) -> tuple[Variable, Variable]:
         (gy,) = gys
         return gy, gy
 
@@ -37,10 +37,9 @@ class Mul(Function):
         y = x0 * x1
         return y
 
-    def backward(self, *gys: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def backward(self, *gys: Variable) -> tuple[Variable, Variable]:
         (gy,) = gys
-        x0 = self.inputs[0].data
-        x1 = self.inputs[1].data
+        x0, x1 = self.inputs
         return gy * x1, gy * x0
 
 
@@ -48,23 +47,6 @@ def mul(
     self: Variable, other: Variable | int | float | np.ndarray | np.number
 ) -> Variable:
     return Mul().apply(self, as_nparray(other))
-
-
-class Square(Function):
-    def apply(self, x: Variable) -> Variable:
-        result = super().__call__(x)
-        assert isinstance(result, Variable)
-        return result
-
-    def forward(self, *xs: np.ndarray) -> np.ndarray:
-        (x,) = xs
-        return x**2
-
-    def backward(self, *gys: np.ndarray) -> np.ndarray:
-        (gy,) = gys
-        x = self.inputs[0].data
-        gx = 2 * x * gy
-        return gx
 
 
 class Neg(Function):
@@ -77,7 +59,7 @@ class Neg(Function):
         (x,) = xs
         return -x
 
-    def backward(self, *gys: np.ndarray) -> np.ndarray:
+    def backward(self, *gys: Variable) -> Variable:
         (gy,) = gys
         return -gy
 
@@ -97,7 +79,7 @@ class Sub(Function):
         y = x0 - x1
         return y
 
-    def backward(self, *gys: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def backward(self, *gys: Variable) -> tuple[Variable, Variable]:
         (gy,) = gys
         return gy, -gy
 
@@ -125,10 +107,9 @@ class Div(Function):
         y = x0 / x1
         return y
 
-    def backward(self, *gys: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def backward(self, *gys: Variable) -> tuple[Variable, Variable]:
         (gy,) = gys
-        x0 = self.inputs[0].data
-        x1 = self.inputs[1].data
+        (x0, x1) = self.inputs
         return gy / x1, -gy * x0 / (x1**2)
 
 
@@ -157,9 +138,9 @@ class Pow(Function):
         (x,) = xs
         return x**self.exponent
 
-    def backward(self, *gys: np.ndarray) -> np.ndarray:
+    def backward(self, *gys: Variable) -> Variable:
         (gy,) = gys
-        x = self.inputs[0].data
+        (x,) = self.inputs
         gx = self.exponent * (x ** (self.exponent - 1)) * gy
         return gx
 

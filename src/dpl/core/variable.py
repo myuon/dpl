@@ -2,6 +2,7 @@ from __future__ import annotations
 import numpy as np
 from typing import TYPE_CHECKING
 from dpl.core.utils import unwrap
+from dpl.core.config import use_config
 
 if TYPE_CHECKING:
     from function import Function
@@ -17,7 +18,7 @@ class Variable:
 
         self.data = data
         self.name = name
-        self.grad: np.ndarray | None = None
+        self.grad: Variable | None = None
         self.creator: "Function | None" = None
         self.generation = 0
 
@@ -50,9 +51,9 @@ class Variable:
         self.creator = func
         self.generation = func.generation + 1
 
-    def backward(self, retain_grad=False) -> None:
+    def backward(self, retain_grad=False, create_graph=False) -> None:
         if self.grad is None:
-            self.grad = np.ones_like(self.data)
+            self.grad = Variable(np.ones_like(self.data))
 
         assert self.creator is not None
 
@@ -70,23 +71,25 @@ class Variable:
         while stack:
             f = stack.pop()
             gys = [unwrap(unwrap(output()).grad) for output in f.outputs]
-            gxs = f.backward(*gys)
-            if not isinstance(gxs, tuple):
-                gxs = (gxs,)
 
-            assert len(gxs) == len(f.inputs)
-            for x, gx in zip(f.inputs, gxs):
-                if x.grad is None:
-                    x.grad = gx
-                else:
-                    x.grad = x.grad + gx
+            with use_config("enable_backprop", create_graph):
+                gxs = f.backward(*gys)
+                if not isinstance(gxs, tuple):
+                    gxs = (gxs,)
 
-                if x.creator is not None:
-                    add_visited(x.creator)
+                assert len(gxs) == len(f.inputs)
+                for x, gx in zip(f.inputs, gxs):
+                    if x.grad is None:
+                        x.grad = gx
+                    else:
+                        x.grad = x.grad + gx
 
-            if not retain_grad:
-                for y in f.outputs:
-                    unwrap(y()).grad = None
+                    if x.creator is not None:
+                        add_visited(x.creator)
+
+                if not retain_grad:
+                    for y in f.outputs:
+                        unwrap(y()).grad = None
 
     def cleargrad(self) -> None:
         self.grad = None
