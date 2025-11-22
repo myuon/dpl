@@ -3,5 +3,6 @@ from dpl.graph import *
 from dpl.functions import *
 from dpl.layers import *
 from dpl.models import *
+from dpl.optimizers import *
 
 load_operators()
