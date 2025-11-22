@@ -12,12 +12,19 @@ class Add(Function):
 
     def forward(self, *xs: np.ndarray) -> np.ndarray:
         x0, x1 = xs
+        self.x0_shape, self.x1_shape = x0.shape, x1.shape
         y = x0 + x1
         return y
 
     def backward(self, *gys: Variable) -> tuple[Variable, Variable]:
+        from dpl.functions.broadcast_to import sum_to
+
         (gy,) = gys
-        return gy, gy
+        gx0, gx1 = gy, gy
+        if self.x0_shape != self.x1_shape:
+            gx0 = sum_to(gx0, self.x0_shape)
+            gx1 = sum_to(gx1, self.x1_shape)
+        return gx0, gx1
 
 
 def add(
