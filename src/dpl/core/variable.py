@@ -163,6 +163,11 @@ class Variable:
     def T(self) -> Variable:
         return self.transpose()
 
+    def sum(self, axis: int | None = None, keepdims: bool = False) -> Variable:
+        from dpl.functions import sum
+
+        return sum(self, axis, keepdims)
+
 
 def as_variable(obj: np.ndarray | Variable) -> Variable:
     if isinstance(obj, Variable):
