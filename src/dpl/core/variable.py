@@ -16,7 +16,7 @@ class Variable:
             if not isinstance(data, np.ndarray):
                 raise TypeError(f"{type(data)} is not supported.")
 
-        self.data = data
+        self.data: np.ndarray = data
         self.name = name
         self.grad: Variable | None = None
         self.creator: "Function | None" = None
