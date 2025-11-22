@@ -3,12 +3,12 @@ import pytest
 import sys
 from pathlib import Path
 
-# src/dpl をパスに追加
-sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "dpl"))
+# src をパスに追加
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from function import Function
-from variable import Variable
-from utils import as_nparray
+from dpl.core.function import Function
+from dpl.core.variable import Variable
+from dpl.core.utils import as_nparray
 
 
 class Square(Function):
@@ -135,7 +135,7 @@ class TestSquare:
         # dy/dx = 2x = 2 * 3 = 6
         expected_grad = 6.0
         assert np.allclose(
-            x.grad, expected_grad
+            x.grad.data, expected_grad
         ), f"gradient mismatch: {x.grad} vs {expected_grad}"
 
     def test_backward_chain(self):
@@ -152,5 +152,5 @@ class TestSquare:
         # dz/dx = 4x^3 = 4 * 2^3 = 32
         expected_grad = 32.0
         assert np.allclose(
-            x.grad, expected_grad
+            x.grad.data, expected_grad
         ), f"gradient mismatch: {x.grad} vs {expected_grad}"
