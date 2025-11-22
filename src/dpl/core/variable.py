@@ -147,6 +147,22 @@ class Variable:
     def __pow__(self, exponent: float) -> Variable:
         raise NotImplementedError()
 
+    def reshape(self, *shape: int) -> Variable:
+        from dpl.functions import reshape
+
+        if len(shape) == 1 and isinstance(shape[0], (tuple, list)):
+            shape = tuple(shape[0])
+        return reshape(self, shape)
+
+    def transpose(self) -> Variable:
+        from dpl.functions import transpose
+
+        return transpose(self)
+
+    @property
+    def T(self) -> Variable:
+        return self.transpose()
+
 
 def as_variable(obj: np.ndarray | Variable) -> Variable:
     if isinstance(obj, Variable):
