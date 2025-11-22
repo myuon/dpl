@@ -1,10 +1,11 @@
 from function import Function
+from utils import as_nparray
 from variable import Variable
 import numpy as np
 
 
 class Add(Function):
-    def apply(self, x0: Variable, x1: Variable) -> Variable:
+    def apply(self, x0: Variable, x1: Variable | np.ndarray) -> Variable:
         result = super().__call__(x0, x1)
         assert isinstance(result, Variable)
         return result
@@ -19,12 +20,14 @@ class Add(Function):
         return gy, gy
 
 
-def add(self: Variable, other: Variable) -> Variable:
-    return Add().apply(self, other)
+def add(
+    self: Variable, other: Variable | int | float | np.ndarray | np.number
+) -> Variable:
+    return Add().apply(self, as_nparray(other))
 
 
 class Mul(Function):
-    def apply(self, x0: Variable, x1: Variable) -> Variable:
+    def apply(self, x0: Variable, x1: Variable | np.ndarray) -> Variable:
         result = super().__call__(x0, x1)
         assert isinstance(result, Variable)
         return result
@@ -41,8 +44,10 @@ class Mul(Function):
         return gy * x1, gy * x0
 
 
-def mul(self: Variable, other: Variable) -> Variable:
-    return Mul().apply(self, other)
+def mul(
+    self: Variable, other: Variable | int | float | np.ndarray | np.number
+) -> Variable:
+    return Mul().apply(self, as_nparray(other))
 
 
 class Square(Function):
@@ -63,4 +68,6 @@ class Square(Function):
 
 
 Variable.__add__ = add
+Variable.__radd__ = add
 Variable.__mul__ = mul
+Variable.__rmul__ = mul

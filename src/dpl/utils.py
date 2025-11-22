@@ -1,7 +1,7 @@
 import numpy as np
 
 
-def as_nparray(x):
+def as_nparray(x) -> np.ndarray:
     if np.isscalar(x):
         return np.array(x)
 

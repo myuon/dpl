@@ -1,17 +1,23 @@
 import numpy as np
 from utils import as_nparray
-from variable import Variable
 import weakref
 from config import Config
+from typing import TYPE_CHECKING
+from variable import as_variable
+
+if TYPE_CHECKING:
+    from variable import Variable
 
 
 class Function:
-    def __call__(self, *inputs: Variable):
+    def __call__(self, *_inputs: "np.ndarray | Variable"):
+        inputs = [as_variable(x) for x in _inputs]
+
         xs = [x.data for x in inputs]
         ys = self.forward(*xs)
         if not isinstance(ys, tuple):
             ys = (ys,)
-        outputs = [Variable(as_nparray(y)) for y in ys]
+        outputs = [as_variable(as_nparray(y)) for y in ys]
 
         if Config.enable_backprop:
             self.generation = max([x.generation for x in inputs])

@@ -8,6 +8,8 @@ if TYPE_CHECKING:
 
 
 class Variable:
+    __array_priority__ = 200
+
     def __init__(self, data: np.ndarray, name: str | None = None) -> None:
         if data is not None:
             if not isinstance(data, np.ndarray):
@@ -89,8 +91,28 @@ class Variable:
     def cleargrad(self) -> None:
         self.grad = None
 
-    def __mul__(self, other: Variable) -> Variable:
+    def __mul__(
+        self, other: Variable | np.ndarray | int | float | np.number
+    ) -> Variable:
         raise NotImplementedError()
 
-    def __add__(self, other: Variable) -> Variable:
+    def __add__(
+        self, other: Variable | np.ndarray | int | float | np.number
+    ) -> Variable:
         raise NotImplementedError()
+
+    def __rmul__(
+        self, other: Variable | np.ndarray | int | float | np.number
+    ) -> Variable:
+        raise NotImplementedError()
+
+    def __radd__(
+        self, other: Variable | np.ndarray | int | float | np.number
+    ) -> Variable:
+        raise NotImplementedError()
+
+
+def as_variable(obj: np.ndarray | Variable) -> Variable:
+    if isinstance(obj, Variable):
+        return obj
+    return Variable(obj)
