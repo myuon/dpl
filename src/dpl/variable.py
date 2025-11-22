@@ -27,8 +27,8 @@ class Variable:
 
         assert self.creator is not None
 
-        stack = []
-        visited = set()
+        stack: list[Function] = []
+        visited: set[Function] = set()
 
         def add_visited(f: Function) -> None:
             if f not in visited:
@@ -40,7 +40,7 @@ class Variable:
 
         while stack:
             f = stack.pop()
-            gys = [output.grad for output in f.outputs]
+            gys = [output().grad for output in f.outputs]
             gxs = f.backward(*gys)
             if not isinstance(gxs, tuple):
                 gxs = (gxs,)
