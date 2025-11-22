@@ -38,6 +38,13 @@ class Variable:
     def dtype(self) -> np.dtype:
         return self.data.dtype
 
+    @property
+    def grad_required(self) -> Variable:
+        assert (
+            self.grad is not None
+        ), "grad is None. Please set grad before using grad_required."
+        return self.grad
+
     def __len__(self) -> int:
         return len(self.data)
 
