@@ -1,21 +1,48 @@
 from __future__ import annotations
 import numpy as np
 from typing import TYPE_CHECKING
+from utils import unwrap
 
 if TYPE_CHECKING:
     from function import Function
 
 
 class Variable:
-    def __init__(self, data: np.ndarray) -> None:
+    def __init__(self, data: np.ndarray, name: str | None = None) -> None:
         if data is not None:
             if not isinstance(data, np.ndarray):
                 raise TypeError(f"{type(data)} is not supported.")
 
         self.data = data
+        self.name = name
         self.grad: np.ndarray | None = None
         self.creator: "Function | None" = None
         self.generation = 0
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return self.data.shape
+
+    @property
+    def ndim(self) -> int:
+        return self.data.ndim
+
+    @property
+    def size(self) -> int:
+        return self.data.size
+
+    @property
+    def dtype(self) -> np.dtype:
+        return self.data.dtype
+
+    def __len__(self) -> int:
+        return len(self.data)
+
+    def __repr__(self) -> str:
+        if self.data is None:
+            return "variable(None)"
+        p = str(self.data).replace("\n", "\n" + " " * 9)
+        return f"variable({p})"
 
     def set_creator(self, func: "Function") -> None:
         self.creator = func
@@ -40,7 +67,7 @@ class Variable:
 
         while stack:
             f = stack.pop()
-            gys = [output().grad for output in f.outputs]
+            gys = [unwrap(unwrap(output()).grad) for output in f.outputs]
             gxs = f.backward(*gys)
             if not isinstance(gxs, tuple):
                 gxs = (gxs,)
@@ -57,7 +84,7 @@ class Variable:
 
             if not retain_grad:
                 for y in f.outputs:
-                    y().grad = None
+                    unwrap(y()).grad = None
 
     def cleargrad(self) -> None:
         self.grad = None
