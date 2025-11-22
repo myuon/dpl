@@ -157,6 +157,8 @@ def pow(self: Variable, exponent: float) -> Variable:
 
 
 def load_operators() -> None:
+    from dpl.functions import get_item
+
     Variable.__add__ = add
     Variable.__radd__ = add
     Variable.__mul__ = mul
@@ -167,3 +169,4 @@ def load_operators() -> None:
     Variable.__truediv__ = div
     Variable.__rtruediv__ = rdiv
     Variable.__pow__ = pow
+    Variable.__getitem__ = get_item

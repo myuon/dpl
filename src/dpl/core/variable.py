@@ -168,6 +168,11 @@ class Variable:
 
         return sum(self, axis, keepdims)
 
+    def __getitem__(self: Variable, slices: tuple | int) -> Variable:
+        from dpl.functions import get_item
+
+        return get_item(self, slices)
+
 
 def as_variable(obj: np.ndarray | Variable) -> Variable:
     if isinstance(obj, Variable):
