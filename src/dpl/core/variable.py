@@ -1,7 +1,7 @@
 from __future__ import annotations
 import numpy as np
 from typing import TYPE_CHECKING
-from utils import unwrap
+from dpl.core.utils import unwrap
 
 if TYPE_CHECKING:
     from function import Function

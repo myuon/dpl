@@ -1,6 +1,6 @@
-from function import Function
-from utils import as_nparray
-from variable import Variable
+from dpl.core.function import Function
+from dpl.core.utils import as_nparray
+from dpl.core.variable import Variable
 import numpy as np
 
 
@@ -168,13 +168,14 @@ def pow(self: Variable, exponent: float) -> Variable:
     return Pow(exponent).apply(self)
 
 
-Variable.__add__ = add
-Variable.__radd__ = add
-Variable.__mul__ = mul
-Variable.__rmul__ = mul
-Variable.__neg__ = neg
-Variable.__sub__ = sub
-Variable.__rsub__ = rsub
-Variable.__truediv__ = div
-Variable.__rtruediv__ = rdiv
-Variable.__pow__ = pow
+def load_operators() -> None:
+    Variable.__add__ = add
+    Variable.__radd__ = add
+    Variable.__mul__ = mul
+    Variable.__rmul__ = mul
+    Variable.__neg__ = neg
+    Variable.__sub__ = sub
+    Variable.__rsub__ = rsub
+    Variable.__truediv__ = div
+    Variable.__rtruediv__ = rdiv
+    Variable.__pow__ = pow

@@ -2,3 +2,4 @@ __marimo__/
 __pycache__/
 build/
 main.prof
+src/scratch.py

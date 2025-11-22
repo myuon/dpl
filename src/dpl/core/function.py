@@ -1,9 +1,9 @@
 import numpy as np
-from utils import as_nparray
+from dpl.core.utils import as_nparray
 import weakref
-from config import Config
+from dpl.core.config import Config
 from typing import TYPE_CHECKING
-from variable import as_variable
+from dpl.core.variable import as_variable
 
 if TYPE_CHECKING:
     from variable import Variable
