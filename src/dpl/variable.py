@@ -111,6 +111,32 @@ class Variable:
     ) -> Variable:
         raise NotImplementedError()
 
+    def __neg__(self) -> Variable:
+        raise NotImplementedError()
+
+    def __sub__(
+        self, other: Variable | np.ndarray | int | float | np.number
+    ) -> Variable:
+        raise NotImplementedError()
+
+    def __rsub__(
+        self, other: Variable | np.ndarray | int | float | np.number
+    ) -> Variable:
+        raise NotImplementedError()
+
+    def __truediv__(
+        self, other: Variable | np.ndarray | int | float | np.number
+    ) -> Variable:
+        raise NotImplementedError()
+
+    def __rtruediv__(
+        self, other: Variable | np.ndarray | int | float | np.number
+    ) -> Variable:
+        raise NotImplementedError()
+
+    def __pow__(self, exponent: float) -> Variable:
+        raise NotImplementedError()
+
 
 def as_variable(obj: np.ndarray | Variable) -> Variable:
     if isinstance(obj, Variable):
