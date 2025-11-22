@@ -88,3 +88,9 @@ class Variable:
 
     def cleargrad(self) -> None:
         self.grad = None
+
+    def __mul__(self, other: Variable) -> Variable:
+        raise NotImplementedError()
+
+    def __add__(self, other: Variable) -> Variable:
+        raise NotImplementedError()
