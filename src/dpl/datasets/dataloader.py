@@ -1,5 +1,5 @@
 import numpy as np
-from dpl import Dataset
+from dpl.datasets.dataset import Dataset
 
 
 class DataLoader:
