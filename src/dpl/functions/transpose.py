@@ -21,7 +21,7 @@ class Transpose(Function):
 
         axes_len = len(self.axes)
         xp = get_array_module(gy.data)
-        inv_axes = tuple(xp.argsort([ax % axes_len for ax in self.axes]))
+        inv_axes = tuple(xp.argsort(xp.array([ax % axes_len for ax in self.axes])))
         gx = transpose(gy, *inv_axes)
         return gx
 

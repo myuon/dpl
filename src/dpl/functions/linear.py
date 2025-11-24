@@ -11,6 +11,6 @@ def linear(
         return t
 
     y = t + b
-    t.data = None  # type: ignore
+    t.data = None
 
     return y

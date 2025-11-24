@@ -17,7 +17,7 @@ class Linear(Layer):
         self.out_size = out_size
         self.dtype = dtype
 
-        self.W = Parameter(None, name="W")  # type: ignore
+        self.W = Parameter(None, name="W")
         if self.in_size is not None:
             self._init_W()
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 import numpy as np
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeGuard
 from dpl.core.utils import unwrap, ndarray, ndarray_types
 from dpl.core.config import use_config
 
@@ -12,12 +12,12 @@ if TYPE_CHECKING:
 class Variable:
     __array_priority__ = 200
 
-    def __init__(self, data: ndarray, name: str | None = None) -> None:
+    def __init__(self, data: ndarray | None, name: str | None = None) -> None:
         if data is not None:
             if not isinstance(data, ndarray_types):
                 raise TypeError(f"{type(data)} is not supported.")
 
-        self.data: ndarray = data
+        self.data: ndarray | None = data
         self.name = name
         self.grad: Variable | None = None
         self.creator: "Function | None" = None
@@ -25,19 +25,26 @@ class Variable:
 
     @property
     def shape(self) -> tuple[int, ...]:
-        return self.data.shape
+        return self.data_required.shape
 
     @property
     def ndim(self) -> int:
-        return self.data.ndim
+        return self.data_required.ndim
 
     @property
     def size(self) -> int:
-        return self.data.size
+        return self.data_required.size
 
     @property
     def dtype(self) -> np.dtype:
-        return self.data.dtype
+        return self.data_required.dtype
+
+    @property
+    def data_required(self) -> ndarray:
+        assert (
+            self.data is not None
+        ), "data is None. Please set data before using data_required."
+        return self.data
 
     @property
     def grad_required(self) -> Variable:
@@ -47,7 +54,7 @@ class Variable:
         return self.grad
 
     def __len__(self) -> int:
-        return len(self.data)
+        return len(self.data_required)
 
     def __repr__(self) -> str:
         if self.data is None:

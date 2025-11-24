@@ -85,10 +85,11 @@ class Im2Col(Function):
 
     def backward(self, *gys: Variable) -> Variable:
         (gy,) = gys
-        # input_shapeは4要素のtupleであることが保証されている
-        input_shape = tuple(self.input_shape)  # type: ignore
+        input_shape = tuple(self.input_shape)
         assert len(input_shape) == 4
-        gx = col2im(gy, input_shape, self.filter_h, self.filter_w, self.stride, self.pad)  # type: ignore
+        gx = col2im(
+            gy, input_shape, self.filter_h, self.filter_w, self.stride, self.pad
+        )
         return gx
 
 
