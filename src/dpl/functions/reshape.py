@@ -1,14 +1,9 @@
-from dpl.core import Variable, Function, ndarray
+from dpl.core import Variable, UnaryFunction, ndarray
 
 
-class Reshape(Function):
+class Reshape(UnaryFunction):
     def __init__(self, shape: tuple[int, ...]) -> None:
         self.shape = shape
-
-    def apply(self, x: Variable) -> Variable:
-        result = super().__call__(x)
-        assert isinstance(result, Variable)
-        return result
 
     def forward(self, *xs: ndarray) -> ndarray:
         (x,) = xs

@@ -1,5 +1,5 @@
 from dpl import Variable, ndarray, get_array_module
-from dpl.core import Function
+from dpl.core import BinaryFunction
 import dpl.functions as F
 
 
@@ -9,12 +9,7 @@ def softmax(x: Variable, axis: int = 1) -> Variable:
     return y / sum_y
 
 
-class SoftmaxCrossEntropy(Function):
-    def apply(self, x: Variable, t: Variable) -> Variable:
-        result = super().__call__(x, t)
-        assert isinstance(result, Variable)
-        return result
-
+class SoftmaxCrossEntropy(BinaryFunction):
     def forward(self, *xs: ndarray) -> ndarray:
         x, t = xs
         N = x.shape[0]

@@ -1,4 +1,4 @@
-from dpl.core import Variable, Function, as_variable, ndarray, get_array_module
+from dpl.core import Variable, UnaryFunction, as_variable, ndarray, get_array_module
 
 
 def reshape_sum_backward(
@@ -29,15 +29,10 @@ def reshape_sum_backward(
     return gy.reshape(tuple(shape))
 
 
-class Sum(Function):
+class Sum(UnaryFunction):
     def __init__(self, axis: int | None = None, keepdims: bool = False) -> None:
         self.axis = axis
         self.keepdims = keepdims
-
-    def apply(self, x: Variable) -> Variable:
-        result = super().__call__(x)
-        assert isinstance(result, Variable)
-        return result
 
     def forward(self, *xs: ndarray) -> ndarray:
         (x,) = xs

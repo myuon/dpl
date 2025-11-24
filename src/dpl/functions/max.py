@@ -1,4 +1,4 @@
-from dpl.core import Variable, Function, as_variable, ndarray, get_array_module
+from dpl.core import Variable, UnaryFunction, as_variable, ndarray, get_array_module
 
 
 def reshape_max_backward(
@@ -29,15 +29,10 @@ def reshape_max_backward(
     return gy.reshape(tuple(shape))
 
 
-class Max(Function):
+class Max(UnaryFunction):
     def __init__(self, axis: int | None = None, keepdims: bool = False) -> None:
         self.axis = axis
         self.keepdims = keepdims
-
-    def apply(self, x: Variable) -> Variable:
-        result = super().__call__(x)
-        assert isinstance(result, Variable)
-        return result
 
     def forward(self, *xs: ndarray) -> ndarray:
         (x,) = xs

@@ -13,7 +13,7 @@ class Function:
     def __call__(self, *_inputs: "ndarray | Variable"):
         inputs = [as_variable(x) for x in _inputs]
 
-        xs = [x.data for x in inputs]
+        xs = [x.data_required for x in inputs]
         ys = self.forward(*xs)
         if not isinstance(ys, tuple):
             ys = (ys,)
@@ -35,3 +35,17 @@ class Function:
 
     def backward(self, *gys: "Variable") -> "Variable | tuple[Variable, ...]":
         raise NotImplementedError()
+
+
+class UnaryFunction(Function):
+    def apply(self, x: "Variable") -> "Variable":
+        result = super().__call__(x)
+        assert isinstance(result, Variable)
+        return result
+
+
+class BinaryFunction(Function):
+    def apply(self, x0: "Variable", x1: "Variable") -> "Variable":
+        result = super().__call__(x0, x1)
+        assert isinstance(result, Variable)
+        return result

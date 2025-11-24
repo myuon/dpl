@@ -1,15 +1,10 @@
-from dpl.core import Variable, Function, ndarray, get_array_module
+from dpl.core import Variable, UnaryFunction, ndarray, get_array_module
 
 
-class GetItemGrad(Function):
+class GetItemGrad(UnaryFunction):
     def __init__(self, slices: tuple | int, input_shape: tuple) -> None:
         self.slices = slices
         self.input_shape = input_shape
-
-    def apply(self, gy: Variable) -> Variable:
-        result = super().__call__(gy)
-        assert isinstance(result, Variable)
-        return result
 
     def forward(self, *xs: ndarray) -> ndarray:
         (gy,) = xs
@@ -23,14 +18,9 @@ class GetItemGrad(Function):
         return get_item(ggx, self.slices)
 
 
-class GetItem(Function):
+class GetItem(UnaryFunction):
     def __init__(self, slices: tuple | int) -> None:
         self.slices = slices
-
-    def apply(self, x: Variable) -> Variable:
-        result = super().__call__(x)
-        assert isinstance(result, Variable)
-        return result
 
     def forward(self, *xs: ndarray) -> ndarray:
         (x,) = xs

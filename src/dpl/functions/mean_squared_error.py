@@ -1,12 +1,7 @@
-from dpl.core import Variable, Function, ndarray
+from dpl.core import Variable, BinaryFunction, ndarray
 
 
-class MeanSquaredError(Function):
-    def apply(self, y_pred: Variable, y_true: Variable) -> Variable:
-        result = super().__call__(y_pred, y_true)
-        assert isinstance(result, Variable)
-        return result
-
+class MeanSquaredError(BinaryFunction):
     def forward(self, *xs: ndarray) -> ndarray:
         x0, x1 = xs
         diff = x0 - x1

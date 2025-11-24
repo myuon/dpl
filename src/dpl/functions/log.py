@@ -1,13 +1,8 @@
-from dpl.core import Variable, Function, ndarray
+from dpl.core import Variable, UnaryFunction, ndarray
 from dpl.core import metal
 
 
-class Log(Function):
-    def apply(self, x: Variable) -> Variable:
-        result = super().__call__(x)
-        assert isinstance(result, Variable)
-        return result
-
+class Log(UnaryFunction):
     def forward(self, *xs: ndarray) -> ndarray:
         (x,) = xs
         xp = metal.get_array_module(x)

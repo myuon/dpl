@@ -1,4 +1,4 @@
-from dpl.core import ndarray, get_array_module, Variable, Function
+from dpl.core import ndarray, get_array_module, Variable, UnaryFunction
 
 
 def _im2col_array(
@@ -65,17 +65,12 @@ def _col2im_array(
         return img[:, :, :H, :W]
 
 
-class Im2Col(Function):
+class Im2Col(UnaryFunction):
     def __init__(self, filter_h: int, filter_w: int, stride: int = 1, pad: int = 0):
         self.filter_h = filter_h
         self.filter_w = filter_w
         self.stride = stride
         self.pad = pad
-
-    def apply(self, x: Variable) -> Variable:
-        result = super().__call__(x)
-        assert isinstance(result, Variable)
-        return result
 
     def forward(self, *xs: ndarray) -> ndarray:
         (x,) = xs
@@ -93,7 +88,7 @@ class Im2Col(Function):
         return gx
 
 
-class Col2Im(Function):
+class Col2Im(UnaryFunction):
     def __init__(
         self,
         input_shape: tuple[int, int, int, int],
@@ -107,11 +102,6 @@ class Col2Im(Function):
         self.filter_w = filter_w
         self.stride = stride
         self.pad = pad
-
-    def apply(self, col: Variable) -> Variable:
-        result = super().__call__(col)
-        assert isinstance(result, Variable)
-        return result
 
     def forward(self, *cols: ndarray) -> ndarray:
         (col,) = cols

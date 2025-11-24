@@ -1,12 +1,7 @@
-from dpl import Variable, Function, ndarray, get_array_module
+from dpl import Variable, UnaryFunction, ndarray, get_array_module
 
 
-class Sin(Function):
-    def apply(self, x: Variable) -> Variable:
-        result = super().__call__(x)
-        assert isinstance(result, Variable)
-        return result
-
+class Sin(UnaryFunction):
     def forward(self, *xs: ndarray) -> ndarray:
         (x,) = xs
         xp = get_array_module(x)
@@ -26,12 +21,7 @@ def sin(
     return Sin().apply(self)
 
 
-class Cos(Function):
-    def apply(self, x: Variable) -> Variable:
-        result = super().__call__(x)
-        assert isinstance(result, Variable)
-        return result
-
+class Cos(UnaryFunction):
     def forward(self, *xs: ndarray) -> ndarray:
         (x,) = xs
         xp = get_array_module(x)

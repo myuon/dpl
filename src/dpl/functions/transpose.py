@@ -1,14 +1,9 @@
-from dpl.core import Variable, Function, ndarray, get_array_module
+from dpl.core import Variable, UnaryFunction, ndarray, get_array_module
 
 
-class Transpose(Function):
+class Transpose(UnaryFunction):
     def __init__(self, *axes: int) -> None:
         self.axes = axes
-
-    def apply(self, x: Variable) -> Variable:
-        result = super().__call__(x)
-        assert isinstance(result, Variable)
-        return result
 
     def forward(self, *xs: ndarray) -> ndarray:
         (x,) = xs

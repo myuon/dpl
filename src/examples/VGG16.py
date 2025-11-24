@@ -25,7 +25,7 @@ x = as_variable(x)
 with no_grad():
     y = model.apply(x)
 
-predict_id = int(np.argmax(y.data))
+predict_id = int(np.argmax(y.data_required))
 print(f"Predicted class ID: {predict_id}")
 
 # Get and display the label

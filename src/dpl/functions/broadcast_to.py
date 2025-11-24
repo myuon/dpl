@@ -1,15 +1,10 @@
-from dpl.core import Variable, Function, ndarray
+from dpl.core import Variable, UnaryFunction, ndarray
 from dpl.core import metal
 
 
-class BroadcastTo(Function):
+class BroadcastTo(UnaryFunction):
     def __init__(self, shape: tuple[int, ...]) -> None:
         self.shape = shape
-
-    def apply(self, x: Variable) -> Variable:
-        result = super().__call__(x)
-        assert isinstance(result, Variable)
-        return result
 
     def forward(self, *xs: ndarray) -> ndarray:
         (x,) = xs
@@ -24,14 +19,9 @@ class BroadcastTo(Function):
         return gx
 
 
-class SumTo(Function):
+class SumTo(UnaryFunction):
     def __init__(self, shape: tuple[int, ...]) -> None:
         self.shape = shape
-
-    def apply(self, x: Variable) -> Variable:
-        result = super().__call__(x)
-        assert isinstance(result, Variable)
-        return result
 
     def forward(self, *xs: ndarray) -> ndarray:
         (x,) = xs

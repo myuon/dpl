@@ -8,4 +8,4 @@ class SGD(Optimizer):
         self.lr = lr
 
     def update_one(self, param: Variable) -> None:
-        param.data -= self.lr * param.grad_required.data
+        param.data = param.data_required - self.lr * param.grad_required.data_required

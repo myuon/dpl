@@ -1,12 +1,7 @@
-from dpl.core import Variable, Function, ndarray, get_array_module
+from dpl.core import Variable, UnaryFunction, ndarray, get_array_module
 
 
-class Exp(Function):
-    def apply(self, x: Variable) -> Variable:
-        result = super().__call__(x)
-        assert isinstance(result, Variable)
-        return result
-
+class Exp(UnaryFunction):
     def forward(self, *xs: ndarray) -> ndarray:
         (x,) = xs
         xp = get_array_module(x)

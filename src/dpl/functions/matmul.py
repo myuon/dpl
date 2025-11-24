@@ -1,12 +1,7 @@
-from dpl.core import Variable, Function, ndarray
+from dpl.core import Variable, BinaryFunction, ndarray
 
 
-class MatMul(Function):
-    def apply(self, x0: Variable, x1: Variable) -> Variable:
-        result = super().__call__(x0, x1)
-        assert isinstance(result, Variable)
-        return result
-
+class MatMul(BinaryFunction):
     def forward(self, *xs: ndarray) -> ndarray:
         x, W = xs
         y = x.dot(W)

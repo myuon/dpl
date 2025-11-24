@@ -1,14 +1,9 @@
-from dpl import Function, Variable, ndarray
+from dpl import UnaryFunction, Variable, ndarray
 from dpl.core import metal
 import jax.numpy as jnp
 
 
-class ReLU(Function):
-    def apply(self, x: Variable) -> Variable:
-        result = super().__call__(x)
-        assert isinstance(result, Variable)
-        return result
-
+class ReLU(UnaryFunction):
     def forward(self, *xs: ndarray) -> ndarray:
         (x,) = xs
         xp = metal.get_array_module(x)

@@ -35,12 +35,12 @@ class Adam(Optimizer):
 
         # 1次モーメント (momentum) の更新
         self.m[param_id] = (
-            self.beta1 * self.m[param_id] + (1 - self.beta1) * param.grad.data
+            self.beta1 * self.m[param_id] + (1 - self.beta1) * param.grad.data_required
         )
 
         # 2次モーメント (RMSprop) の更新
         self.v[param_id] = self.beta2 * self.v[param_id] + (1 - self.beta2) * (
-            param.grad.data**2
+            param.grad.data_required**2
         )
 
         # バイアス補正
@@ -48,4 +48,4 @@ class Adam(Optimizer):
         v_hat = self.v[param_id] / (1 - self.beta2 ** self.t[param_id])
 
         # パラメータの更新
-        param.data -= self.lr * m_hat / (np.sqrt(v_hat) + self.eps)
+        param.data = param.data_required - self.lr * m_hat / (np.sqrt(v_hat) + self.eps)
