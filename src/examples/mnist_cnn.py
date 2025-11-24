@@ -16,54 +16,6 @@ import dpl
 import time
 import numpy as np
 
-
-# Define SimpleCNN model
-class SimpleCNN(M.Model):
-    """Simple CNN for MNIST classification
-
-    Architecture:
-    Input (1, 28, 28) -> Conv2d (30 filters, 5x5) -> ReLU -> Pooling (2x2)
-    -> Linear (100) -> ReLU -> Linear (10)
-    """
-
-    def __init__(self, num_classes: int = 10, hidden_size: int = 100) -> None:
-        super().__init__()
-
-        # Conv layer
-        self.conv1 = L.Conv2d(30, kernel_size=5, stride=1, pad=0)
-
-        # Fully connected layers
-        # After conv1: (28-5+1)/1 = 24, after pool: 24/2 = 12
-        # Output size: 30 * 12 * 12 = 4320
-        self.fc1 = L.Linear(hidden_size)
-        self.fc2 = L.Linear(num_classes)
-
-    def forward(self, *xs: Variable) -> Variable:
-        (x,) = xs
-
-        # Conv block: Conv -> ReLU -> Pooling
-        x = self.conv1.apply(x)
-        x = F.relu(x)
-        x = F.pooling(x, kernel_size=2, stride=2)
-
-        # Flatten
-        x = x.reshape(x.shape[0], -1)
-
-        # Fully connected layers: Affine -> ReLU -> Affine
-        x = self.fc1.apply(x)
-        x = F.relu(x)
-        x = self.fc2.apply(x)
-
-        return x
-
-    def apply(self, x: Variable) -> Variable:
-        out = super().__call__(x)
-        assert isinstance(
-            out, Variable
-        ), f"Output must be a Variable but got {type(out)}"
-        return out
-
-
 batch_size = 1000
 max_epoch = 5
 hidden_size = 1000
@@ -219,7 +171,7 @@ plt.show()
 # Visualization 3: Conv filters
 with no_grad():
     # Get the first conv layer weights (first layer in Sequential)
-    conv_layer = model[0]
+    conv_layer = model["l0"]
     assert isinstance(conv_layer, L.Conv2d)
     conv_weights = conv_layer.W.data_required
     print(f"Conv1 weights shape: {conv_weights.shape}")  # (30, 1, 5, 5)

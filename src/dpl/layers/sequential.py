@@ -6,23 +6,22 @@ from typing import Callable
 class Sequential(Layer):
     def __init__(self, *layers):
         super().__init__()
-        self.layers: list[Layer] = []
+        self.layers: list[Layer | Callable] = []
 
         for i, layer in enumerate(layers):
-            # Register layers as attributes so they're tracked by Layer's __setattr__
             if isinstance(layer, Layer):
                 setattr(self, f"l{i}", layer)
                 self.layers.append(getattr(self, f"l{i}"))
             else:
-                # Allow callables (like lambda x: F.relu(x))
                 self.layers.append(layer)
 
-    def forward(self, *inputs: Variable) -> Variable:
-        result = inputs
+    def forward(self, *xs: Variable) -> Variable:
+        (x,) = xs
+
+        out = x
         for layer in self.layers:
-            result = layer(*result)
+            out = layer(out)
+        return out
 
-        return result if not isinstance(result, tuple) else result[0]
-
-    def __getitem__(self, index: int) -> Layer:
-        return self.layers[index]
+    def __getitem__(self, name: str) -> Layer:
+        return getattr(self, name)
