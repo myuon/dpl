@@ -54,7 +54,11 @@ def conv2d(
     x, Q = as_variable(x), as_variable(Q)
     Weight = Q
 
-    if isinstance(x.data, jnp.ndarray) and isinstance(Weight.data, jnp.ndarray):
+    if (
+        isinstance(x.data, jnp.ndarray)
+        and isinstance(Weight.data, jnp.ndarray)
+        and (b is None or isinstance(b.data, jnp.ndarray))
+    ):
         y_data = conv2d_jax(
             x.data,
             Weight.data,

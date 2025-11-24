@@ -7,7 +7,6 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from dpl import as_variable, DataLoader, no_grad, Trainer
 import dpl.functions as F
-import dpl.models as M
 import dpl.layers as L
 import dpl.optimizers as O
 import matplotlib.pyplot as plt
@@ -16,8 +15,8 @@ import dpl
 import numpy as np
 
 batch_size = 1000
-max_epoch = 15
-hidden_size = 1000
+max_epoch = 20
+hidden_size = 100
 lr = 0.1
 
 # Load MNIST dataset
@@ -40,12 +39,32 @@ print(f"Sample shape: {x.shape}")
 # %%
 # Create CNN model and optimizer
 model = L.Sequential(
-    L.Conv2d(30, kernel_size=5, stride=1, pad=0),
+    # Block 1: Conv layers with pooling
+    L.Conv2d(16, kernel_size=3, stride=1, pad=1),  # pad=1 to maintain size
     F.relu,
-    lambda x: F.pooling(x, kernel_size=2, stride=2),
-    lambda x: x.reshape(x.shape[0], -1),
+    L.Conv2d(16, kernel_size=3, stride=1, pad=1),
+    F.relu,
+    lambda x: F.pooling(x, kernel_size=2, stride=2),  # 28x28 -> 14x14
+    # Block 2: Conv layers with pooling
+    L.Conv2d(32, kernel_size=3, stride=1, pad=1),
+    F.relu,
+    L.Conv2d(32, kernel_size=3, stride=1, pad=1),
+    F.relu,
+    lambda x: F.pooling(x, kernel_size=2, stride=2),  # 14x14 -> 7x7
+    # Block 3: Conv layers with pooling
+    L.Conv2d(64, kernel_size=3, stride=1, pad=1),
+    F.relu,
+    L.Conv2d(64, kernel_size=3, stride=1, pad=1),
+    F.relu,
+    lambda x: F.pooling(x, kernel_size=2, stride=2),  # 7x7 -> 3x3
+    # Flatten for fully connected layers
+    lambda x: x.reshape(x.shape[0], -1),  # 64 * 3 * 3 = 576
+    # Fully connected layers
     L.Linear(hidden_size),
     F.relu,
+    lambda x: F.dropout(x, dropout_ratio=0.5),
+    L.Linear(hidden_size),
+    lambda x: F.dropout(x, dropout_ratio=0.5),
     L.Linear(10),
 )
 optimizer = O.SGD(lr=lr).setup(model)
@@ -76,6 +95,7 @@ trainer = Trainer(
     preprocess_fn=preprocess,
 )
 
+# Initialize weights and save initial state
 x, t = train_set[0]
 x = x.reshape(1, 1, 28, 28)
 x_var = as_variable(x)
@@ -83,6 +103,11 @@ x_var = as_variable(x)
 conv_layer = model["l0"]
 assert isinstance(conv_layer, L.Conv2d)
 conv_layer.prepare(x_var)
+
+# Move weights to GPU after initialization
+if dpl.metal.gpu_enable:
+    model.to_gpu()
+
 conv_weights_initial = conv_layer.W.data_required
 
 # Train the model
