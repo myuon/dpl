@@ -64,7 +64,7 @@ class SimpleCNN(M.Model):
         return out
 
 
-batch_size = 100
+batch_size = 1000
 max_epoch = 5
 hidden_size = 100
 lr = 0.1
@@ -104,8 +104,10 @@ test_acc_history = []
 
 # Start timing
 start_time = time.time()
+epoch_times = []
 
 for epoch in range(max_epoch):
+    epoch_start = time.time()
     sum_loss = 0
     sum_accuracy = 0
     batch_count = 0
@@ -130,10 +132,19 @@ for epoch in range(max_epoch):
     train_loss_history.append(train_loss)
     train_acc_history.append(sum_accuracy / len(train_set))
 
+    # Calculate epoch time and estimate remaining time
+    epoch_time = time.time() - epoch_start
+    epoch_times.append(epoch_time)
+    avg_epoch_time = sum(epoch_times) / len(epoch_times)
+    remaining_epochs = max_epoch - (epoch + 1)
+    estimated_remaining = avg_epoch_time * remaining_epochs
+
     print(
         f"epoch {epoch+1}/{max_epoch} ({batch_count} batches), "
         f"loss: {train_loss:.4f}, "
-        f"accuracy: {sum_accuracy / len(train_set):.4f}"
+        f"accuracy: {sum_accuracy / len(train_set):.4f}, "
+        f"time: {epoch_time:.2f}s, "
+        f"ETA: {estimated_remaining:.2f}s"
     )
 
     sum_loss = 0

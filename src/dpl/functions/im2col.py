@@ -1,4 +1,7 @@
 from dpl.core import ndarray, get_array_module, Variable, UnaryFunction
+from jax import jit
+import jax.numpy as jnp
+from functools import partial
 
 
 def _im2col_array_cpu(
@@ -25,29 +28,31 @@ def _im2col_array_cpu(
     return col
 
 
+@partial(jit, static_argnames=("filter_h", "filter_w", "stride", "pad"))
 def _im2col_array_jax(
     img,
-    N: int,
-    C: int,
     filter_h: int,
     filter_w: int,
-    out_h: int,
-    out_w: int,
     stride: int,
-    xp,  # jax.numpy を想定（np でも動く）
+    pad: int,
 ):
-    oh = xp.arange(out_h)[:, None, None, None]  # (out_h, 1,      1,      1)
-    ow = xp.arange(out_w)[None, :, None, None]  # (1,      out_w, 1,      1)
-    kh = xp.arange(filter_h)[None, None, :, None]  # (1, 1, filter_h, 1)
-    kw = xp.arange(filter_w)[None, None, None, :]  # (1, 1, 1,       filter_w)
+    N, C, H, W = img.shape
+
+    out_h = (H + 2 * pad - filter_h) // stride + 1
+    out_w = (W + 2 * pad - filter_w) // stride + 1
+
+    # ここで out_h, out_w は Python int なので OK
+    oh = jnp.arange(out_h)[:, None, None, None]  # (out_h, 1,      1,      1)
+    ow = jnp.arange(out_w)[None, :, None, None]  # (1,      out_w, 1,      1)
+    kh = jnp.arange(filter_h)[None, None, :, None]
+    kw = jnp.arange(filter_w)[None, None, None, :]
 
     iy = oh * stride + kh
     ix = ow * stride + kw
 
-    col = img[:, :, iy, ix]
-    col = col.transpose(0, 2, 3, 1, 4, 5)
-    col = col.reshape(N * out_h * out_w, -1)
-
+    col = img[:, :, iy, ix]  # (N, C, out_h, out_w, filter_h, filter_w)
+    col = col.transpose(0, 2, 3, 1, 4, 5)  # (N, out_h, out_w, C, filter_h, filter_w)
+    col = col.reshape(N * out_h * out_w, -1)  # (N*out_h*out_w, C*filter_h*filter_w)
     return col
 
 
@@ -68,9 +73,7 @@ def _im2col_array(
     img = xp.pad(x_data, [(0, 0), (0, 0), (pad, pad), (pad, pad)], "constant")
 
     if isinstance(x_data, jnp.ndarray):
-        return _im2col_array_jax(
-            img, N, C, filter_h, filter_w, out_h, out_w, stride, xp
-        )
+        return _im2col_array_jax(img, filter_h, filter_w, stride, pad)
     else:
         return _im2col_array_cpu(
             img, N, C, filter_h, filter_w, out_h, out_w, stride, xp
@@ -107,29 +110,32 @@ def _col2im_array_cpu(
         return img[:, :, :H, :W]
 
 
+@partial(
+    jit, static_argnames=("N", "C", "H", "W", "filter_h", "filter_w", "stride", "pad")
+)
 def _col2im_array_jax(
-    col,
+    col: ndarray,
     N: int,
     C: int,
     H: int,
     W: int,
     filter_h: int,
     filter_w: int,
-    out_h: int,
-    out_w: int,
     stride: int,
     pad: int,
-    xp,
 ):
+    out_h = (H + 2 * pad - filter_h) // stride + 1
+    out_w = (W + 2 * pad - filter_w) // stride + 1
+
     H_padded = H + 2 * pad + stride - 1
     W_padded = W + 2 * pad + stride - 1
 
-    img = xp.zeros((N, C, H_padded, W_padded), dtype=col.dtype)
+    img = jnp.zeros((N, C, H_padded, W_padded), dtype=col.dtype)
 
-    y = xp.arange(filter_h)[:, None, None, None]
-    x = xp.arange(filter_w)[None, :, None, None]
-    oh = xp.arange(out_h)[None, None, :, None]
-    ow = xp.arange(out_w)[None, None, None, :]
+    y = jnp.arange(filter_h)[:, None, None, None]
+    x = jnp.arange(filter_w)[None, :, None, None]
+    oh = jnp.arange(out_h)[None, None, :, None]
+    ow = jnp.arange(out_w)[None, None, None, :]
 
     iy = y + stride * oh
     ix = x + stride * ow
@@ -166,9 +172,7 @@ def _col2im_array(
     import jax.numpy as jnp
 
     if isinstance(col_data, jnp.ndarray):
-        return _col2im_array_jax(
-            col, N, C, H, W, filter_h, filter_w, out_h, out_w, stride, pad, xp
-        )
+        return _col2im_array_jax(col, N, C, H, W, filter_h, filter_w, stride, pad)
     else:
         return _col2im_array_cpu(
             col, N, C, H, W, filter_h, filter_w, out_h, out_w, stride, pad, xp
