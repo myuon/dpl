@@ -123,9 +123,7 @@ def test_conv2d_multichannel():
 def test_conv2d_backward():
     """Test conv2d backward pass
 
-    Current implementation supports backward for Q (weights) and b (bias),
-    but not for x (input) due to im2col returning ndarray.
-    This is sufficient for training conv layers, but not for input optimization.
+    Full backward support for x (input), Q (weights), and b (bias).
     """
     # Small input for testing
     x = Variable(np.random.randn(2, 1, 4, 4))
@@ -141,35 +139,58 @@ def test_conv2d_backward():
     # Backward pass
     loss.backward()
 
-    # Q and b gradients should exist (sufficient for training conv layers)
+    # All gradients should exist
+    assert x.grad is not None, "x.grad should not be None"
     assert Q.grad is not None, "Q.grad should not be None"
     assert b.grad is not None, "b.grad should not be None"
 
     # Check gradient shapes
+    assert x.grad.shape == x.shape, f"x.grad shape mismatch: {x.grad.shape} vs {x.shape}"
     assert Q.grad.shape == Q.shape, f"Q.grad shape mismatch: {Q.grad.shape} vs {Q.shape}"
     assert b.grad.shape == b.shape, f"b.grad shape mismatch: {b.grad.shape} vs {b.shape}"
 
     # Check that gradients are not all zeros
+    assert not np.allclose(x.grad.data, 0), "x.grad should not be all zeros"
     assert not np.allclose(Q.grad.data, 0), "Q.grad should not be all zeros"
-    # b.grad might be non-zero depending on the computation
 
-    # Note: x.grad is None due to im2col, but that's okay for conv layer training
-    # assert x.grad is not None, "x.grad should not be None"  # This would fail
-
-    print("✓ test_conv2d_backward passed (Q and b gradients work)")
+    print("✓ test_conv2d_backward passed (full backward support)")
 
 
 def test_conv2d_gradient_check():
     """Test conv2d gradient with numerical gradient
 
-    Tests gradients for Q (weights) and b (bias).
-    Note: x (input) gradient is not tested as im2col currently returns ndarray.
+    Tests gradients for x (input), Q (weights), and b (bias).
     """
     # Very small input for gradient checking
     np.random.seed(42)
     x_data = np.random.randn(1, 1, 3, 3)
     Q_data = np.random.randn(1, 1, 2, 2)
     b_data = np.zeros(1)
+
+    # Test gradient for x (input)
+    x = Variable(x_data.copy())
+    Q = Variable(Q_data.copy())
+    b = Variable(b_data.copy())
+
+    y = F.conv2d(x, Q, b, stride=1, pad=0)
+    loss = F.sum(y)
+    loss.backward()
+
+    # Numerical gradient for x
+    def f_x(x_input):
+        x_var = Variable(x_input)
+        Q_var = Variable(Q_data.copy())
+        b_var = Variable(b_data.copy())
+        y_var = F.conv2d(x_var, Q_var, b_var, stride=1, pad=0)
+        return np.sum(y_var.data)
+
+    numerical_grad_x = numerical_gradient(f_x, x_data.copy())
+
+    assert x.grad is not None, "x.grad should not be None"
+    np.testing.assert_allclose(
+        x.grad.data, numerical_grad_x, rtol=1e-3, atol=1e-4,
+        err_msg="Gradient mismatch for x"
+    )
 
     # Test gradient for Q (weights)
     Q = Variable(Q_data.copy())
@@ -220,7 +241,7 @@ def test_conv2d_gradient_check():
         err_msg="Gradient mismatch for b"
     )
 
-    print("✓ test_conv2d_gradient_check passed (Q and b gradients verified)")
+    print("✓ test_conv2d_gradient_check passed (x, Q, and b gradients verified)")
 
 
 def test_conv2d_known_output():
