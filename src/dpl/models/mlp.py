@@ -1,4 +1,3 @@
-import numpy as np
 from dpl import Variable
 import dpl.functions as F
 import dpl.layers as L

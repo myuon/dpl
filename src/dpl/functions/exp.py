@@ -1,5 +1,4 @@
-import numpy as np
-from dpl.core import Variable, Function, ndarray
+from dpl.core import Variable, Function, ndarray, get_array_module
 
 
 class Exp(Function):
@@ -10,7 +9,8 @@ class Exp(Function):
 
     def forward(self, *xs: ndarray) -> ndarray:
         (x,) = xs
-        y = np.exp(x)
+        xp = get_array_module(x)
+        y = xp.exp(x)
         return y
 
     def backward(self, *gys: Variable) -> Variable:

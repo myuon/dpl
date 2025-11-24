@@ -1,5 +1,5 @@
 import numpy as np
-from dpl.core import Variable, Function
+from dpl.core import Variable
 from dpl.layers.layer import Parameter, Layer
 import dpl.functions as F
 

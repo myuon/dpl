@@ -1,4 +1,3 @@
-import numpy as np
 from dpl import Variable, Function, ndarray, get_array_module
 
 
@@ -35,7 +34,8 @@ class Cos(Function):
 
     def forward(self, *xs: ndarray) -> ndarray:
         (x,) = xs
-        y = np.cos(x)
+        xp = get_array_module(x)
+        y = xp.cos(x)
         return y
 
     def backward(self, *gys: Variable) -> Variable:

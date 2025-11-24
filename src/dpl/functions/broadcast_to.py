@@ -1,7 +1,5 @@
-import numpy as np
 from dpl.core import Variable, Function, ndarray
 from dpl.core import metal
-import jax.numpy as jnp
 
 
 class BroadcastTo(Function):

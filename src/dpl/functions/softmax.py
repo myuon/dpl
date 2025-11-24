@@ -1,5 +1,4 @@
-import numpy as np
-from dpl import Variable, ndarray
+from dpl import Variable, ndarray, get_array_module
 from dpl.core import Function
 import dpl.functions as F
 
@@ -21,16 +20,17 @@ class SoftmaxCrossEntropy(Function):
         N = x.shape[0]
 
         # Softmax (numerically stable)
-        x_max = np.max(x, axis=1, keepdims=True)
-        exp_x = np.exp(x - x_max)
-        self.y = exp_x / np.sum(exp_x, axis=1, keepdims=True)
+        xp = get_array_module(x)
+        x_max = xp.max(x, axis=1, keepdims=True)
+        exp_x = xp.exp(x - x_max)
+        self.y = exp_x / xp.sum(exp_x, axis=1, keepdims=True)
 
         # Cross entropy
-        log_p = np.log(np.clip(self.y, 1e-15, 1.0))
-        t_onehot = np.eye(x.shape[1])[t.astype(int)]
-        loss = -np.sum(t_onehot * log_p) / N
+        log_p = xp.log(xp.clip(self.y, 1e-15, 1.0))
+        t_onehot = xp.eye(x.shape[1])[t.astype(int)]
+        loss = -xp.sum(t_onehot * log_p) / N
 
-        return np.array(loss)
+        return xp.array(loss)
 
     def backward(self, *gys: Variable) -> tuple[Variable, Variable]:
         (gy,) = gys
@@ -38,14 +38,15 @@ class SoftmaxCrossEntropy(Function):
 
         N = x.shape[0]
         # Create one-hot encoding
-        t_onehot = np.eye(x.shape[1])[t.data.astype(int)]
+        xp = get_array_module(x.data)
+        t_onehot = xp.eye(x.shape[1])[t.data.astype(int)]
 
         # Gradient: (y - t_onehot) / N
         gx = (self.y - t_onehot) / N
         gx = Variable(gx * gy.data)  # Multiply by upstream gradient
 
         # No gradient for labels
-        gt = Variable(np.zeros_like(t.data))
+        gt = Variable(xp.zeros_like(t.data))
 
         return gx, gt
 

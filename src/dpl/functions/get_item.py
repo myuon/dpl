@@ -1,5 +1,4 @@
-import numpy as np
-from dpl.core import Variable, Function, ndarray
+from dpl.core import Variable, Function, ndarray, get_array_module
 
 
 class GetItemGrad(Function):
@@ -14,8 +13,9 @@ class GetItemGrad(Function):
 
     def forward(self, *xs: ndarray) -> ndarray:
         (gy,) = xs
-        gx = np.zeros(self.input_shape)
-        np.add.at(gx, self.slices, gy)
+        xp = get_array_module(gy)
+        gx = xp.zeros(self.input_shape)
+        xp.add.at(gx, self.slices, gy)  # type:ignore
         return gx
 
     def backward(self, *gys: Variable) -> Variable:

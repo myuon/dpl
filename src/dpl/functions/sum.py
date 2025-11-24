@@ -1,5 +1,4 @@
-import numpy as np
-from dpl.core import Variable, Function, as_variable, ndarray
+from dpl.core import Variable, Function, as_variable, ndarray, get_array_module
 
 
 def reshape_sum_backward(
@@ -49,7 +48,8 @@ class Sum(Function):
     def backward(self, *gys: Variable) -> Variable:
         (gy,) = gys
         gy = reshape_sum_backward(gy.data, self.x_shape, self.axis, self.keepdims)
-        gx = np.broadcast_to(gy, self.x_shape)
+        xp = get_array_module(gy)
+        gx = xp.broadcast_to(gy, self.x_shape)
         return as_variable(gx)
 
 

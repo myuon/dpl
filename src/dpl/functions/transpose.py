@@ -1,4 +1,3 @@
-import numpy as np
 from dpl.core import Variable, Function, ndarray
 
 

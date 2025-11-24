@@ -1,4 +1,3 @@
-import numpy as np
 from dpl import Variable, Function
 import tempfile
 import subprocess
