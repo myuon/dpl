@@ -36,6 +36,17 @@ class Layer:
             elif isinstance(value, Layer):
                 yield from value.params()
 
+    def _flatten_params(self, params_dict, parent_key=[]):
+        for name in self._params:
+            value = self.__dict__[name]
+            key = parent_key.copy()
+            key.append(name)
+
+            if isinstance(value, Layer):
+                value._flatten_params(params_dict, key)
+            else:
+                params_dict["/".join(key)] = value
+
     def cleargrads(self):
         for param in self.params():
             param.cleargrad()
@@ -47,3 +58,33 @@ class Layer:
     def to_gpu(self):
         for param in self.params():
             param.to_gpu()
+
+    def save_weights(self, path: str) -> None:
+        import os
+        import numpy as np
+
+        self.to_cpu()
+
+        params_dict = {}
+        self._flatten_params(params_dict)
+        array_dict = {k: v.data for k, v in params_dict.items()}
+
+        try:
+            np.savez_compressed(path, **array_dict)
+        except Exception as e:
+            if os.path.exists(path):
+                os.remove(path)
+            raise
+
+    def load_weights(self, path: str) -> None:
+        import numpy as np
+
+        loaded = np.load(path)
+        params_dict = {}
+        self._flatten_params(params_dict)
+
+        for k, param in params_dict.items():
+            if k in loaded:
+                param.data = loaded[k]
+            else:
+                raise KeyError(f"Key '{k}' not found in the loaded weights.")
