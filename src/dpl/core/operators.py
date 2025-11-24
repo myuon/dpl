@@ -166,14 +166,14 @@ def pow(self: Variable, exponent: float) -> Variable:
 def load_operators() -> None:
     from dpl.functions import get_item
 
-    Variable.__add__ = add
-    Variable.__radd__ = add
-    Variable.__mul__ = mul
-    Variable.__rmul__ = mul
-    Variable.__neg__ = neg
-    Variable.__sub__ = sub
-    Variable.__rsub__ = rsub
-    Variable.__truediv__ = div
-    Variable.__rtruediv__ = rdiv
-    Variable.__pow__ = pow
-    Variable.__getitem__ = get_item
+    Variable.__add__ = add  # type: ignore[method-assign]
+    Variable.__radd__ = add  # type: ignore[method-assign]
+    Variable.__mul__ = mul  # type: ignore[method-assign]
+    Variable.__rmul__ = mul  # type: ignore[method-assign]
+    Variable.__neg__ = neg  # type: ignore[method-assign]
+    Variable.__sub__ = sub  # type: ignore[method-assign]
+    Variable.__rsub__ = rsub  # type: ignore[method-assign]
+    Variable.__truediv__ = div  # type: ignore[method-assign]
+    Variable.__rtruediv__ = rdiv  # type: ignore[method-assign]
+    Variable.__pow__ = pow  # type: ignore[method-assign]
+    Variable.__getitem__ = get_item  # type: ignore[method-assign]

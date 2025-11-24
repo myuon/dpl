@@ -6,7 +6,7 @@ from dpl.core.variable import as_variable
 
 
 if TYPE_CHECKING:
-    from variable import Variable
+    from dpl.core.variable import Variable
 
 
 class Function:

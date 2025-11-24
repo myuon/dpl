@@ -6,7 +6,7 @@ from dpl.core.config import use_config
 
 
 if TYPE_CHECKING:
-    from function import Function
+    from dpl.core.function import Function
 
 
 class Variable:
