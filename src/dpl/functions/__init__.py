@@ -13,3 +13,4 @@ from dpl.functions.softmax import softmax
 from dpl.functions.softmax import softmax_cross_entropy
 from dpl.functions.get_item import get_item
 from dpl.functions.accuracy import accuracy
+from dpl.functions.relu import relu
