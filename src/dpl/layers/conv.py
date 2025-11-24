@@ -48,11 +48,14 @@ class Conv2d(Layer):
         assert isinstance(result, Variable)
         return result
 
-    def forward(self, *xs: Variable) -> Variable:
-        (x,) = xs
+    def prepare(self, x: Variable) -> None:
         if self.W.data is None:
             self.in_channels = x.shape[1]
             xp = get_random_module(x)
             self._init_W(xp)
+
+    def forward(self, *xs: Variable) -> Variable:
+        (x,) = xs
+        self.prepare(x)
 
         return F.conv2d(x, self.W, self.b, self.stride, self.pad)

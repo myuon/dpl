@@ -76,6 +76,15 @@ trainer = Trainer(
     preprocess_fn=preprocess,
 )
 
+x, t = train_set[0]
+x = x.reshape(1, 1, 28, 28)
+x_var = as_variable(x)
+
+conv_layer = model["l0"]
+assert isinstance(conv_layer, L.Conv2d)
+conv_layer.prepare(x_var)
+conv_weights_initial = conv_layer.W.data_required
+
 # Train the model
 trainer.run()
 
@@ -126,7 +135,21 @@ with no_grad():
     conv_weights = conv_layer.W.data_required
     print(f"Conv1 weights shape: {conv_weights.shape}")  # (30, 1, 5, 5)
 
-    # Visualize the first 16 filters
+    # Visualize the first 16 filters (before)
+    fig, axes = plt.subplots(4, 4, figsize=(8, 8))
+    for i in range(16):
+        ax = axes[i // 4, i % 4]
+        # Get filter i, channel 0 (since input has 1 channel)
+        filter_img = conv_weights_initial[i, 0, :, :]
+        im = ax.imshow(filter_img, cmap="gray")
+        ax.set_title(f"Filter {i}")
+        ax.axis("off")
+
+    plt.suptitle("Learned Conv Filters (5x5) Before Training")
+    plt.tight_layout()
+    plt.show()
+
+    # Visualize the first 16 filters (after)
     fig, axes = plt.subplots(4, 4, figsize=(8, 8))
     for i in range(16):
         ax = axes[i // 4, i % 4]
@@ -136,7 +159,7 @@ with no_grad():
         ax.set_title(f"Filter {i}")
         ax.axis("off")
 
-    plt.suptitle("Learned Conv Filters (5x5)")
+    plt.suptitle("Learned Conv Filters (5x5) After Training")
     plt.tight_layout()
     plt.show()
 
