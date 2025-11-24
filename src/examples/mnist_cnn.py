@@ -5,7 +5,7 @@ from pathlib import Path
 # Add parent directory to path so imports work regardless of where script is run from
 sys.path.append(str(Path(__file__).parent.parent))
 
-from dpl import as_variable, DataLoader, no_grad, Variable
+from dpl import as_variable, DataLoader, no_grad, Variable, Trainer
 import dpl.functions as F
 import dpl.models as M
 import dpl.layers as L
@@ -13,7 +13,6 @@ import dpl.optimizers as O
 import matplotlib.pyplot as plt
 import datasets
 import dpl
-import time
 import numpy as np
 
 batch_size = 1000
@@ -57,95 +56,38 @@ if dpl.metal.gpu_enable:
     train_loader.to_gpu()
     test_loader.to_gpu()
 
-# Track loss history
-train_loss_history = []
-test_loss_history = []
-train_acc_history = []
-test_acc_history = []
 
-# Start timing
-start_time = time.time()
-epoch_times = []
+# Preprocessing function to reshape images for CNN
+def preprocess(x, t):
+    # Reshape input to (N, C, H, W) format for CNN
+    x = x.reshape(-1, 1, 28, 28)
+    return x, t
 
 
-for epoch in range(max_epoch):
-    epoch_start = time.time()
-    sum_loss = 0
-    sum_accuracy = 0
-    batch_count = 0
+# Create trainer
+trainer = Trainer(
+    model=model,
+    optimizer=optimizer,
+    loss_fn=F.softmax_cross_entropy,
+    metric_fn=F.accuracy,
+    train_loader=train_loader,
+    test_loader=test_loader,
+    max_epoch=max_epoch,
+    preprocess_fn=preprocess,
+)
 
-    for x, t in train_loader:
-        # Reshape input to (N, C, H, W) format for CNN
-        x = x.reshape(-1, 1, 28, 28)
-        x, t = as_variable(x), as_variable(t)
-
-        y = model(x)
-        loss = F.softmax_cross_entropy(y, t)
-        acc = F.accuracy(y, t)
-        loss.backward()
-        optimizer.update()
-        model.cleargrads()
-
-        sum_loss += loss.data_required * len(t)
-        sum_accuracy += acc.data_required * len(t)
-        batch_count += 1
-
-    train_loss = sum_loss / len(train_set)
-    train_loss_history.append(train_loss)
-    train_acc_history.append(sum_accuracy / len(train_set))
-
-    # Calculate epoch time and estimate remaining time
-    epoch_time = time.time() - epoch_start
-    epoch_times.append(epoch_time)
-    avg_epoch_time = sum(epoch_times) / len(epoch_times)
-    remaining_epochs = max_epoch - (epoch + 1)
-    estimated_remaining = avg_epoch_time * remaining_epochs
-
-    print(
-        f"epoch {epoch+1}/{max_epoch} ({batch_count} batches), "
-        f"loss: {train_loss:.4f}, "
-        f"accuracy: {sum_accuracy / len(train_set):.4f}, "
-        f"time: {epoch_time:.2f}s, "
-        f"ETA: {estimated_remaining:.2f}s"
-    )
-
-    sum_loss = 0
-    sum_accuracy = 0
-
-    with no_grad():
-        for x, t in test_loader:
-            # Reshape input to (N, C, H, W) format for CNN
-            x = x.reshape(-1, 1, 28, 28)
-            x, t = as_variable(x), as_variable(t)
-            y = model(x)
-            loss = F.softmax_cross_entropy(y, t)
-            acc = F.accuracy(y, t)
-
-            sum_loss += loss.data_required * len(t)
-            sum_accuracy += acc.data_required * len(t)
-
-    test_loss = sum_loss / len(test_set)
-    test_loss_history.append(test_loss)
-    test_acc_history.append(sum_accuracy / len(test_set))
-
-    print(
-        f"test loss: {test_loss:.4f}, "
-        f"test accuracy: {sum_accuracy / len(test_set):.4f}"
-    )
-
-
-# End timing
-end_time = time.time()
-total_time = end_time - start_time
-
-print(f"\nTotal training time: {total_time:.2f} seconds")
-print(f"Average time per epoch: {total_time / max_epoch:.2f} seconds")
+# Train the model
+trainer.run()
 
 # %%
 # Visualization 1: Loss history over epochs
 plt.figure(figsize=(10, 6))
-plt.plot(range(1, max_epoch + 1), train_loss_history, label="Train Loss", linewidth=2)
-plt.plot(range(1, max_epoch + 1), test_loss_history, label="Test Loss", linewidth=2)
+plt.plot(
+    range(1, max_epoch + 1), trainer.train_loss_history, label="Train Loss", linewidth=2
+)
+plt.plot(
+    range(1, max_epoch + 1), trainer.test_loss_history, label="Test Loss", linewidth=2
+)
 plt.xlabel("Epoch")
 plt.ylabel("Loss")
 plt.title("Training and Test Loss Over Epochs (CNN)")
@@ -157,9 +99,17 @@ plt.show()
 # Visualization 2: Accuracy history over epochs
 plt.figure(figsize=(10, 6))
 plt.plot(
-    range(1, max_epoch + 1), train_acc_history, label="Train Accuracy", linewidth=2
+    range(1, max_epoch + 1),
+    trainer.train_metric_history,
+    label="Train Accuracy",
+    linewidth=2,
 )
-plt.plot(range(1, max_epoch + 1), test_acc_history, label="Test Accuracy", linewidth=2)
+plt.plot(
+    range(1, max_epoch + 1),
+    trainer.test_metric_history,
+    label="Test Accuracy",
+    linewidth=2,
+)
 plt.xlabel("Epoch")
 plt.ylabel("Accuracy")
 plt.title("Training and Test Accuracy Over Epochs (CNN)")

@@ -5,6 +5,7 @@ from dpl.layers import *
 from dpl.models import *
 from dpl.optimizers import *
 from dpl.datasets import *
+from dpl.trainer import *
 
 
 load_operators()
