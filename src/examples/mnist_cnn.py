@@ -106,6 +106,7 @@ test_acc_history = []
 start_time = time.time()
 epoch_times = []
 
+
 for epoch in range(max_epoch):
     epoch_start = time.time()
     sum_loss = 0
