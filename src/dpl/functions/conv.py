@@ -18,9 +18,9 @@ def conv2d(
     col = F.im2col(x, KH, KW, stride, pad)
     Weight = Weight.reshape(OC, -1).transpose()
     t = F.linear(col, Weight, b)
-    y = t.reshape(N, OH, OW, OC).data.transpose(0, 3, 1, 2)
+    y = t.reshape(N, OH, OW, OC).transpose(0, 3, 1, 2)
 
-    return Variable(y)
+    return y
 
 
 def pooling(x: Variable | ndarray, kernel_size: int, stride=1, pad=0) -> Variable:

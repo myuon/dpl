@@ -27,6 +27,5 @@ def im2col(
             x_max = x + stride * out_w
             col[:, :, y, x, :, :] = img[:, :, y:y_max:stride, x:x_max:stride]
 
-    # (N, C, filter_h, filter_w, out_h, out_w) -> (N*out_h*out_w, C*filter_h*filter_w)
     col = col.transpose(0, 4, 5, 1, 2, 3).reshape(N * out_h * out_w, -1)
     return col

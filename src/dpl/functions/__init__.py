@@ -16,4 +16,4 @@ from dpl.functions.accuracy import accuracy
 from dpl.functions.relu import relu
 from dpl.functions.dropout import dropout
 from dpl.functions.im2col import im2col
-from dpl.functions.conv import conv2d
+from dpl.functions.conv import conv2d, pooling

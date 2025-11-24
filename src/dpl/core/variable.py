@@ -155,10 +155,10 @@ class Variable:
             shape = tuple(shape[0])
         return reshape(self, shape)
 
-    def transpose(self) -> Variable:
+    def transpose(self, *axes: int) -> Variable:
         from dpl.functions import transpose
 
-        return transpose(self)
+        return transpose(self, *axes)
 
     @property
     def T(self) -> Variable:
