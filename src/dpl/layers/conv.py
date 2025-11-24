@@ -1,5 +1,5 @@
 import numpy as np
-from dpl.core import get_array_module, Variable
+from dpl.core import get_random_module, Variable
 from dpl.layers import Layer, Parameter
 import dpl.functions as F
 
@@ -24,14 +24,14 @@ class Conv2d(Layer):
 
         self.W = Parameter(None, name="W")
         if in_channels is not None:
-            self._init_W()
+            self._init_W(np.random)
 
         if nobias:
             self.b = None
         else:
             self.b = Parameter(np.zeros(out_channels), name="b")
 
-    def _init_W(self, xp=np):
+    def _init_W(self, xp):
         assert self.in_channels is not None
         C, OC = self.in_channels, self.out_channels
         KH, KW = (
@@ -40,7 +40,7 @@ class Conv2d(Layer):
             else (self.kernel_size, self.kernel_size)
         )
         scale = np.sqrt(1.0 / (C * KH * KW))
-        W_data = xp.random.randn(OC, C, KH, KW).astype(np.float32) * scale
+        W_data = xp.randn(OC, C, KH, KW).astype(np.float32) * scale
         self.W.data = W_data
 
     def apply(self, x: Variable) -> Variable:
@@ -52,7 +52,7 @@ class Conv2d(Layer):
         (x,) = xs
         if self.W.data is None:
             self.in_channels = x.shape[1]
-            xp = get_array_module(x)
+            xp = get_random_module(x)
             self._init_W(xp)
 
         return F.conv2d(x, self.W, self.b, self.stride, self.pad)

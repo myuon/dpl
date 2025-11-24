@@ -1,20 +1,18 @@
 from dpl.core import ndarray, get_array_module, Variable, UnaryFunction
 
 
-def _im2col_array(
-    x_data: ndarray,
+def _im2col_array_cpu(
+    img: ndarray,
+    N: int,
+    C: int,
     filter_h: int,
     filter_w: int,
-    stride: int = 1,
-    pad: int = 0,
+    out_h: int,
+    out_w: int,
+    stride: int,
+    xp,
 ) -> ndarray:
-    N, C, H, W = x_data.shape
-    out_h = (H + 2 * pad - filter_h) // stride + 1
-    out_w = (W + 2 * pad - filter_w) // stride + 1
-
-    xp = get_array_module(x_data)
-    img = xp.pad(x_data, [(0, 0), (0, 0), (pad, pad), (pad, pad)], "constant")
-
+    """CPU (NumPy) version of im2col using in-place assignment"""
     col = xp.zeros((N, C, filter_h, filter_w, out_h, out_w))
 
     for y in range(filter_h):
@@ -25,6 +23,123 @@ def _im2col_array(
 
     col = col.transpose(0, 4, 5, 1, 2, 3).reshape(N * out_h * out_w, -1)
     return col
+
+
+def _im2col_array_jax(
+    img: ndarray,
+    N: int,
+    C: int,
+    filter_h: int,
+    filter_w: int,
+    out_h: int,
+    out_w: int,
+    stride: int,
+    xp,
+) -> ndarray:
+    """JAX version of im2col using immutable operations"""
+    col_list = []
+    for y in range(filter_h):
+        y_max = y + stride * out_h
+        for x in range(filter_w):
+            x_max = x + stride * out_w
+            col_list.append(img[:, :, y:y_max:stride, x:x_max:stride])
+
+    # Stack and reshape
+    # col_list has filter_h * filter_w elements, each of shape (N, C, out_h, out_w)
+    col = xp.stack(col_list, axis=-1)  # (N, C, out_h, out_w, filter_h*filter_w)
+    col = col.reshape(N, C, out_h, out_w, filter_h, filter_w)
+    col = col.transpose(0, 2, 3, 1, 4, 5)  # (N, out_h, out_w, C, filter_h, filter_w)
+    col = col.reshape(N * out_h * out_w, -1)
+    return col
+
+
+def _im2col_array(
+    x_data: ndarray,
+    filter_h: int,
+    filter_w: int,
+    stride: int = 1,
+    pad: int = 0,
+) -> ndarray:
+    import jax.numpy as jnp
+
+    N, C, H, W = x_data.shape
+    out_h = (H + 2 * pad - filter_h) // stride + 1
+    out_w = (W + 2 * pad - filter_w) // stride + 1
+
+    xp = get_array_module(x_data)
+    img = xp.pad(x_data, [(0, 0), (0, 0), (pad, pad), (pad, pad)], "constant")
+
+    if isinstance(x_data, jnp.ndarray):
+        return _im2col_array_jax(
+            img, N, C, filter_h, filter_w, out_h, out_w, stride, xp
+        )
+    else:
+        return _im2col_array_cpu(
+            img, N, C, filter_h, filter_w, out_h, out_w, stride, xp
+        )
+
+
+def _col2im_array_cpu(
+    col: ndarray,
+    N: int,
+    C: int,
+    H: int,
+    W: int,
+    filter_h: int,
+    filter_w: int,
+    out_h: int,
+    out_w: int,
+    stride: int,
+    pad: int,
+    xp,
+) -> ndarray:
+    """CPU (NumPy) version of col2im using in-place addition"""
+    img = xp.zeros((N, C, H + 2 * pad + stride - 1, W + 2 * pad + stride - 1))
+
+    for y in range(filter_h):
+        y_max = y + stride * out_h
+        for x in range(filter_w):
+            x_max = x + stride * out_w
+            img[:, :, y:y_max:stride, x:x_max:stride] += col[:, :, y, x, :, :]
+
+    # パディングを除去
+    if pad > 0:
+        return img[:, :, pad : H + pad, pad : W + pad]
+    else:
+        return img[:, :, :H, :W]
+
+
+def _col2im_array_jax(
+    col: ndarray,
+    N: int,
+    C: int,
+    H: int,
+    W: int,
+    filter_h: int,
+    filter_w: int,
+    out_h: int,
+    out_w: int,
+    stride: int,
+    pad: int,
+    xp,
+) -> ndarray:
+    """JAX version of col2im using immutable operations"""
+    img = xp.zeros((N, C, H + 2 * pad + stride - 1, W + 2 * pad + stride - 1))
+
+    for y in range(filter_h):
+        y_max = y + stride * out_h
+        for x in range(filter_w):
+            x_max = x + stride * out_w
+            # Use JAX's immutable update syntax
+            img = img.at[:, :, y:y_max:stride, x:x_max:stride].add(
+                col[:, :, y, x, :, :]
+            )
+
+    # パディングを除去
+    if pad > 0:
+        return img[:, :, pad : H + pad, pad : W + pad]
+    else:
+        return img[:, :, :H, :W]
 
 
 def _col2im_array(
@@ -48,21 +163,16 @@ def _col2im_array(
     # (N, out_h, out_w, C, filter_h, filter_w) -> (N, C, filter_h, filter_w, out_h, out_w)
     col = col.transpose(0, 3, 4, 5, 1, 2)
 
-    # パディングされた画像サイズ
-    img = xp.zeros((N, C, H + 2 * pad + stride - 1, W + 2 * pad + stride - 1))
+    import jax.numpy as jnp
 
-    # col2imの逆変換
-    for y in range(filter_h):
-        y_max = y + stride * out_h
-        for x in range(filter_w):
-            x_max = x + stride * out_w
-            img[:, :, y:y_max:stride, x:x_max:stride] += col[:, :, y, x, :, :]
-
-    # パディングを除去
-    if pad > 0:
-        return img[:, :, pad : H + pad, pad : W + pad]
+    if isinstance(col_data, jnp.ndarray):
+        return _col2im_array_jax(
+            col, N, C, H, W, filter_h, filter_w, out_h, out_w, stride, pad, xp
+        )
     else:
-        return img[:, :, :H, :W]
+        return _col2im_array_cpu(
+            col, N, C, H, W, filter_h, filter_w, out_h, out_w, stride, pad, xp
+        )
 
 
 class Im2Col(UnaryFunction):
