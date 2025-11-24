@@ -1,4 +1,4 @@
-from dpl import Variable
+from dpl.core import Variable
 import dpl.functions as F
 import dpl.layers as L
 from dpl.models.model import Model

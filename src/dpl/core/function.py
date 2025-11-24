@@ -1,16 +1,11 @@
 from dpl.core.utils import as_nparray, ndarray
 import weakref
 from dpl.core.config import Config
-from typing import TYPE_CHECKING
-from dpl.core.variable import as_variable
-
-
-if TYPE_CHECKING:
-    from dpl.core.variable import Variable
+from dpl.core.variable import as_variable, Variable
 
 
 class Function:
-    def __call__(self, *_inputs: "ndarray | Variable"):
+    def __call__(self, *_inputs: ndarray | Variable):
         inputs = [as_variable(x) for x in _inputs]
 
         xs = [x.data_required for x in inputs]
@@ -33,19 +28,19 @@ class Function:
     def forward(self, *xs: ndarray) -> ndarray:
         raise NotImplementedError()
 
-    def backward(self, *gys: "Variable") -> "Variable | tuple[Variable, ...]":
+    def backward(self, *gys: Variable) -> Variable | tuple[Variable, ...]:
         raise NotImplementedError()
 
 
 class UnaryFunction(Function):
-    def apply(self, x: "Variable") -> "Variable":
+    def apply(self, x: Variable) -> Variable:
         result = super().__call__(x)
         assert isinstance(result, Variable)
         return result
 
 
 class BinaryFunction(Function):
-    def apply(self, x0: "Variable", x1: "Variable") -> "Variable":
+    def apply(self, x0: Variable, x1: Variable) -> Variable:
         result = super().__call__(x0, x1)
         assert isinstance(result, Variable)
         return result

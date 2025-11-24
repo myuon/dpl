@@ -1,6 +1,6 @@
 from __future__ import annotations
 import numpy as np
-from typing import TYPE_CHECKING, TypeGuard
+from typing import TYPE_CHECKING
 from dpl.core.utils import unwrap, ndarray, ndarray_types
 from dpl.core.config import use_config
 
