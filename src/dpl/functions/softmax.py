@@ -1,5 +1,5 @@
 import numpy as np
-from dpl import Variable
+from dpl import Variable, ndarray
 from dpl.core import Function
 import dpl.functions as F
 
@@ -16,7 +16,7 @@ class SoftmaxCrossEntropy(Function):
         assert isinstance(result, Variable)
         return result
 
-    def forward(self, *xs: np.ndarray) -> np.ndarray:
+    def forward(self, *xs: ndarray) -> ndarray:
         x, t = xs
         N = x.shape[0]
 

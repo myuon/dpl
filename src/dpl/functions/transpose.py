@@ -1,5 +1,5 @@
 import numpy as np
-from dpl.core import Variable, Function
+from dpl.core import Variable, Function, ndarray
 
 
 class Transpose(Function):
@@ -8,7 +8,7 @@ class Transpose(Function):
         assert isinstance(result, Variable)
         return result
 
-    def forward(self, *xs: np.ndarray) -> np.ndarray:
+    def forward(self, *xs: ndarray) -> ndarray:
         (x,) = xs
         return x.T
 

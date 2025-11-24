@@ -1,5 +1,5 @@
-import numpy as np
-from dpl.core import Variable, Function
+from dpl.core import Variable, Function, ndarray
+from dpl.core import metal
 
 
 class Log(Function):
@@ -8,11 +8,11 @@ class Log(Function):
         assert isinstance(result, Variable)
         return result
 
-    def forward(self, *xs: np.ndarray) -> np.ndarray:
+    def forward(self, *xs: ndarray) -> ndarray:
         (x,) = xs
-        # Clip to avoid log(0)
-        x_clipped = np.clip(x, 1e-15, None)
-        y = np.log(x_clipped)
+        xp = metal.get_array_module(x)
+        x_clipped = xp.clip(x, 1e-15, None)
+        y = xp.log(x_clipped)
         return y
 
     def backward(self, *gys: Variable) -> Variable:

@@ -1,5 +1,5 @@
 import numpy as np
-from dpl import Variable, Function
+from dpl import Variable, Function, ndarray, get_array_module
 
 
 class Sin(Function):
@@ -8,9 +8,10 @@ class Sin(Function):
         assert isinstance(result, Variable)
         return result
 
-    def forward(self, *xs: np.ndarray) -> np.ndarray:
+    def forward(self, *xs: ndarray) -> ndarray:
         (x,) = xs
-        y = np.sin(x)
+        xp = get_array_module(x)
+        y = xp.sin(x)
         return y
 
     def backward(self, *gys: Variable) -> Variable:
@@ -32,7 +33,7 @@ class Cos(Function):
         assert isinstance(result, Variable)
         return result
 
-    def forward(self, *xs: np.ndarray) -> np.ndarray:
+    def forward(self, *xs: ndarray) -> ndarray:
         (x,) = xs
         y = np.cos(x)
         return y

@@ -1,6 +1,6 @@
 import numpy as np
 from dpl.datasets.dataset import Dataset
-from dpl import metal
+from dpl.core import metal
 
 
 class DataLoader:

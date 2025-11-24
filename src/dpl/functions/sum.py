@@ -1,10 +1,10 @@
 import numpy as np
-from dpl.core import Variable, Function, as_variable
+from dpl.core import Variable, Function, as_variable, ndarray
 
 
 def reshape_sum_backward(
-    gy: np.ndarray, x_shape: tuple[int, ...], axis: int | None, keepdims: bool
-) -> np.ndarray:
+    gy: ndarray, x_shape: tuple[int, ...], axis: int | None, keepdims: bool
+) -> ndarray:
     """Reshape gradient for sum backward pass.
 
     When keepdims=False, sum removes dimensions, so we need to restore them
@@ -40,7 +40,7 @@ class Sum(Function):
         assert isinstance(result, Variable)
         return result
 
-    def forward(self, *xs: np.ndarray) -> np.ndarray:
+    def forward(self, *xs: ndarray) -> ndarray:
         (x,) = xs
         self.x_shape = x.shape
         y = x.sum(axis=self.axis, keepdims=self.keepdims)

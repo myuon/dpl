@@ -1,6 +1,5 @@
-import numpy as np
-from dpl import Function, Variable, as_variable
-from dpl import metal
+from dpl import Function, Variable, ndarray
+from dpl.core import metal
 import jax.numpy as jnp
 
 
@@ -10,7 +9,7 @@ class ReLU(Function):
         assert isinstance(result, Variable)
         return result
 
-    def forward(self, *xs: np.ndarray | jnp.ndarray) -> np.ndarray | jnp.ndarray:
+    def forward(self, *xs: ndarray) -> ndarray:
         (x,) = xs
         xp = metal.get_array_module(x)
         y = xp.maximum(0, x)

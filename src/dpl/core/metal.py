@@ -1,5 +1,6 @@
 import numpy as np
 import jax.numpy as jnp
+from dpl.core.utils import ndarray
 
 
 gpu_enable = True
@@ -17,15 +18,19 @@ def get_array_module(x):
     return jnp if isinstance(x, jnp.ndarray) else np
 
 
-def as_numpy(x: jnp.ndarray | np.ndarray) -> np.ndarray:
+def as_numpy(x: ndarray) -> np.ndarray:
     if isinstance(x, np.ndarray):
         return x
+    elif isinstance(x, jnp.ndarray):
+        return np.asarray(x)
 
-    return np.asarray(x)
+    raise TypeError("Input is not a recognized ndarray type.")
 
 
-def as_jax(x: np.ndarray | jnp.ndarray) -> jnp.ndarray:
+def as_jax(x: ndarray) -> jnp.ndarray:
     if isinstance(x, jnp.ndarray):
         return x
+    elif isinstance(x, np.ndarray):
+        return jnp.asarray(x)
 
-    return jnp.asarray(x)
+    raise TypeError("Input is not a recognized ndarray type.")

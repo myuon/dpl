@@ -1,10 +1,9 @@
-import numpy as np
-from dpl.core import Variable, Function, as_variable
+from dpl.core import Variable, as_variable, ndarray
 from dpl.functions.matmul import matmul
 
 
 def linear(
-    x: Variable | np.ndarray, W: Variable | np.ndarray, b: Variable | None = None
+    x: Variable | ndarray, W: Variable | ndarray, b: Variable | None = None
 ) -> Variable:
     x, W = as_variable(x), as_variable(W)
     t = matmul(x, W)

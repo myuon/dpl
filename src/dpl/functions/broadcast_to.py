@@ -1,6 +1,6 @@
 import numpy as np
-from dpl.core import Variable, Function, as_variable
-from dpl import metal
+from dpl.core import Variable, Function, ndarray
+from dpl.core import metal
 import jax.numpy as jnp
 
 
@@ -13,7 +13,7 @@ class BroadcastTo(Function):
         assert isinstance(result, Variable)
         return result
 
-    def forward(self, *xs: np.ndarray | jnp.ndarray) -> np.ndarray | jnp.ndarray:
+    def forward(self, *xs: ndarray) -> ndarray:
         (x,) = xs
         self.x_shape = x.shape
         xp = metal.get_array_module(x)
@@ -35,7 +35,7 @@ class SumTo(Function):
         assert isinstance(result, Variable)
         return result
 
-    def forward(self, *xs: np.ndarray) -> np.ndarray:
+    def forward(self, *xs: ndarray) -> ndarray:
         (x,) = xs
         self.x_shape = x.shape
         y = _sum_to(x, self.shape)
@@ -47,7 +47,7 @@ class SumTo(Function):
         return gx
 
 
-def _sum_to(x: np.ndarray, shape: tuple[int, ...]) -> np.ndarray:
+def _sum_to(x: ndarray, shape: tuple[int, ...]) -> ndarray:
     """Sum elements along axes to output an array of a given shape."""
     ndim = len(shape)
     lead = x.ndim - ndim

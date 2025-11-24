@@ -1,17 +1,17 @@
 from dpl.core.function import Function
-from dpl.core.utils import as_nparray
+from dpl.core.utils import as_nparray, ndarray
 from dpl.core.variable import Variable
 import numpy as np
-from dpl import metal
+from dpl.core import metal
 
 
 class Add(Function):
-    def apply(self, x0: Variable, x1: Variable | np.ndarray) -> Variable:
+    def apply(self, x0: Variable, x1: Variable | ndarray) -> Variable:
         result = super().__call__(x0, x1)
         assert isinstance(result, Variable)
         return result
 
-    def forward(self, *xs: np.ndarray) -> np.ndarray:
+    def forward(self, *xs: ndarray) -> ndarray:
         x0, x1 = xs
         self.x0_shape, self.x1_shape = x0.shape, x1.shape
         y = x0 + x1
@@ -29,19 +29,19 @@ class Add(Function):
 
 
 def add(
-    self: Variable, other: Variable | int | float | np.ndarray | np.number
+    self: Variable, other: Variable | int | float | ndarray | np.number
 ) -> Variable:
     other = as_nparray(other, metal.get_array_module(self.data))
     return Add().apply(self, other)
 
 
 class Mul(Function):
-    def apply(self, x0: Variable, x1: Variable | np.ndarray) -> Variable:
+    def apply(self, x0: Variable, x1: Variable | ndarray) -> Variable:
         result = super().__call__(x0, x1)
         assert isinstance(result, Variable)
         return result
 
-    def forward(self, *xs: np.ndarray) -> np.ndarray:
+    def forward(self, *xs: ndarray) -> ndarray:
         x0, x1 = xs
         y = x0 * x1
         return y
@@ -53,7 +53,7 @@ class Mul(Function):
 
 
 def mul(
-    self: Variable, other: Variable | int | float | np.ndarray | np.number
+    self: Variable, other: Variable | int | float | ndarray | np.number
 ) -> Variable:
     other = as_nparray(other, metal.get_array_module(self.data))
     return Mul().apply(self, other)
@@ -65,7 +65,7 @@ class Neg(Function):
         assert isinstance(result, Variable)
         return result
 
-    def forward(self, *xs: np.ndarray) -> np.ndarray:
+    def forward(self, *xs: ndarray) -> ndarray:
         (x,) = xs
         return -x
 
@@ -79,12 +79,12 @@ def neg(self: Variable) -> Variable:
 
 
 class Sub(Function):
-    def apply(self, x0: Variable | np.ndarray, x1: Variable | np.ndarray) -> Variable:
+    def apply(self, x0: Variable | ndarray, x1: Variable | ndarray) -> Variable:
         result = super().__call__(x0, x1)
         assert isinstance(result, Variable)
         return result
 
-    def forward(self, *xs: np.ndarray) -> np.ndarray:
+    def forward(self, *xs: ndarray) -> ndarray:
         x0, x1 = xs
         y = x0 - x1
         return y
@@ -95,26 +95,26 @@ class Sub(Function):
 
 
 def sub(
-    self: Variable, other: Variable | int | float | np.ndarray | np.number
+    self: Variable, other: Variable | int | float | ndarray | np.number
 ) -> Variable:
     other = as_nparray(other, metal.get_array_module(self.data))
     return Sub().apply(self, other)
 
 
 def rsub(
-    self: Variable, other: Variable | int | float | np.ndarray | np.number
+    self: Variable, other: Variable | int | float | ndarray | np.number
 ) -> Variable:
     other = as_nparray(other, metal.get_array_module(self.data))
     return Sub().apply(other, self)
 
 
 class Div(Function):
-    def apply(self, x0: Variable | np.ndarray, x1: Variable | np.ndarray) -> Variable:
+    def apply(self, x0: Variable | ndarray, x1: Variable | ndarray) -> Variable:
         result = super().__call__(x0, x1)
         assert isinstance(result, Variable)
         return result
 
-    def forward(self, *xs: np.ndarray) -> np.ndarray:
+    def forward(self, *xs: ndarray) -> ndarray:
         x0, x1 = xs
         y = x0 / x1
         return y
@@ -126,14 +126,14 @@ class Div(Function):
 
 
 def div(
-    self: Variable, other: Variable | int | float | np.ndarray | np.number
+    self: Variable, other: Variable | int | float | ndarray | np.number
 ) -> Variable:
     other = as_nparray(other, metal.get_array_module(self.data))
     return Div().apply(self, other)
 
 
 def rdiv(
-    self: Variable, other: Variable | int | float | np.ndarray | np.number
+    self: Variable, other: Variable | int | float | ndarray | np.number
 ) -> Variable:
     other = as_nparray(other, metal.get_array_module(self.data))
     return Div().apply(other, self)
@@ -148,7 +148,7 @@ class Pow(Function):
         assert isinstance(result, Variable)
         return result
 
-    def forward(self, *xs: np.ndarray) -> np.ndarray:
+    def forward(self, *xs: ndarray) -> ndarray:
         (x,) = xs
         return x**self.exponent
 

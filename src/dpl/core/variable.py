@@ -1,13 +1,9 @@
 from __future__ import annotations
 import numpy as np
 from typing import TYPE_CHECKING
-from dpl.core.utils import unwrap
+from dpl.core.utils import unwrap, ndarray, ndarray_types
 from dpl.core.config import use_config
-import jax.numpy as jnp
-import dpl.metal
 
-
-array_types = (np.ndarray, jnp.ndarray)
 
 if TYPE_CHECKING:
     from function import Function
@@ -16,12 +12,12 @@ if TYPE_CHECKING:
 class Variable:
     __array_priority__ = 200
 
-    def __init__(self, data: np.ndarray | jnp.ndarray, name: str | None = None) -> None:
+    def __init__(self, data: ndarray, name: str | None = None) -> None:
         if data is not None:
-            if not isinstance(data, array_types):
+            if not isinstance(data, ndarray_types):
                 raise TypeError(f"{type(data)} is not supported.")
 
-        self.data: np.ndarray | jnp.ndarray = data
+        self.data: ndarray = data
         self.name = name
         self.grad: Variable | None = None
         self.creator: "Function | None" = None
@@ -107,53 +103,45 @@ class Variable:
         self.grad = None
 
     def to_cpu(self):
+        from dpl.core import metal
+
         if self.data is not None:
-            self.data = dpl.metal.as_numpy(self.data)
+            self.data = metal.as_numpy(self.data)
 
     def to_gpu(self):
+        from dpl.core import metal
+
         if self.data is not None:
-            self.data = dpl.metal.as_jax(self.data)
+            self.data = metal.as_jax(self.data)
 
-    def __mul__(
-        self, other: Variable | np.ndarray | int | float | np.number
-    ) -> Variable:
+    def __mul__(self, other: Variable | ndarray | int | float | np.number) -> Variable:
         raise NotImplementedError()
 
-    def __add__(
-        self, other: Variable | np.ndarray | int | float | np.number
-    ) -> Variable:
+    def __add__(self, other: Variable | ndarray | int | float | np.number) -> Variable:
         raise NotImplementedError()
 
-    def __rmul__(
-        self, other: Variable | np.ndarray | int | float | np.number
-    ) -> Variable:
+    def __rmul__(self, other: Variable | ndarray | int | float | np.number) -> Variable:
         raise NotImplementedError()
 
-    def __radd__(
-        self, other: Variable | np.ndarray | int | float | np.number
-    ) -> Variable:
+    def __radd__(self, other: Variable | ndarray | int | float | np.number) -> Variable:
         raise NotImplementedError()
 
     def __neg__(self) -> Variable:
         raise NotImplementedError()
 
-    def __sub__(
-        self, other: Variable | np.ndarray | int | float | np.number
-    ) -> Variable:
+    def __sub__(self, other: Variable | ndarray | int | float | np.number) -> Variable:
         raise NotImplementedError()
 
-    def __rsub__(
-        self, other: Variable | np.ndarray | int | float | np.number
-    ) -> Variable:
+    def __rsub__(self, other: Variable | ndarray | int | float | np.number) -> Variable:
         raise NotImplementedError()
 
     def __truediv__(
-        self, other: Variable | np.ndarray | int | float | np.number
+        self, other: Variable | ndarray | int | float | np.number
     ) -> Variable:
         raise NotImplementedError()
 
     def __rtruediv__(
-        self, other: Variable | np.ndarray | int | float | np.number
+        self, other: Variable | ndarray | int | float | np.number
     ) -> Variable:
         raise NotImplementedError()
 
@@ -187,7 +175,7 @@ class Variable:
         return get_item(self, slices)
 
 
-def as_variable(obj: np.ndarray | jnp.ndarray | Variable) -> Variable:
+def as_variable(obj: ndarray | Variable) -> Variable:
     if isinstance(obj, Variable):
         return obj
     return Variable(obj)

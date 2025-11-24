@@ -1,5 +1,4 @@
-import numpy as np
-from dpl.core import Variable, Function
+from dpl.core import Variable, Function, ndarray
 
 
 class MatMul(Function):
@@ -8,7 +7,7 @@ class MatMul(Function):
         assert isinstance(result, Variable)
         return result
 
-    def forward(self, *xs: np.ndarray) -> np.ndarray:
+    def forward(self, *xs: ndarray) -> ndarray:
         x, W = xs
         y = x.dot(W)
         return y

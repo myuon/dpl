@@ -1,5 +1,4 @@
-import numpy as np
-from dpl.core import Variable, Function, as_variable
+from dpl.core import Variable, Function, ndarray
 
 
 class MeanSquaredError(Function):
@@ -8,7 +7,7 @@ class MeanSquaredError(Function):
         assert isinstance(result, Variable)
         return result
 
-    def forward(self, *xs: np.ndarray) -> np.ndarray:
+    def forward(self, *xs: ndarray) -> ndarray:
         x0, x1 = xs
         diff = x0 - x1
         return (diff**2).sum() / diff.size

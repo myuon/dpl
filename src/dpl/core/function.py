@@ -1,17 +1,16 @@
-import numpy as np
-import jax.numpy as jnp
-from dpl.core.utils import as_nparray
+from dpl.core.utils import as_nparray, ndarray
 import weakref
 from dpl.core.config import Config
 from typing import TYPE_CHECKING
 from dpl.core.variable import as_variable
+
 
 if TYPE_CHECKING:
     from variable import Variable
 
 
 class Function:
-    def __call__(self, *_inputs: "np.ndarray | jnp.ndarray | Variable"):
+    def __call__(self, *_inputs: "ndarray | Variable"):
         inputs = [as_variable(x) for x in _inputs]
 
         xs = [x.data for x in inputs]
@@ -31,7 +30,7 @@ class Function:
 
         return outputs if len(outputs) > 1 else outputs[0]
 
-    def forward(self, *xs: np.ndarray) -> np.ndarray:
+    def forward(self, *xs: ndarray) -> ndarray:
         raise NotImplementedError()
 
     def backward(self, *gys: "Variable") -> "Variable | tuple[Variable, ...]":

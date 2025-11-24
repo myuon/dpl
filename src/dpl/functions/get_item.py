@@ -1,5 +1,5 @@
 import numpy as np
-from dpl.core import Variable, Function
+from dpl.core import Variable, Function, ndarray
 
 
 class GetItemGrad(Function):
@@ -12,7 +12,7 @@ class GetItemGrad(Function):
         assert isinstance(result, Variable)
         return result
 
-    def forward(self, *xs: np.ndarray) -> np.ndarray:
+    def forward(self, *xs: ndarray) -> ndarray:
         (gy,) = xs
         gx = np.zeros(self.input_shape)
         np.add.at(gx, self.slices, gy)
@@ -32,7 +32,7 @@ class GetItem(Function):
         assert isinstance(result, Variable)
         return result
 
-    def forward(self, *xs: np.ndarray) -> np.ndarray:
+    def forward(self, *xs: ndarray) -> ndarray:
         (x,) = xs
         y = x[self.slices]
         return y
