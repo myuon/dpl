@@ -36,19 +36,16 @@ class SoftmaxCrossEntropy(Function):
         (gy,) = gys
         (x, t) = self.inputs
 
-        N = x.shape[0]
-        # Create one-hot encoding
+        N, CLS_NUM = x.shape
+
+        gy *= 1.0 / N
+        y = softmax(x)
+
         xp = get_array_module(x.data)
-        t_onehot = xp.eye(x.shape[1])[t.data.astype(int)]
+        t_onehot = xp.eye(CLS_NUM, dtype=t.dtype)[t.data.astype(int)]
+        y = (y - t_onehot) * gy
 
-        # Gradient: (y - t_onehot) / N
-        gx = (self.y - t_onehot) / N
-        gx = Variable(gx * gy.data)  # Multiply by upstream gradient
-
-        # No gradient for labels
-        gt = Variable(xp.zeros_like(t.data))
-
-        return gx, gt
+        return y, Variable(xp.zeros(t.shape))
 
 
 def softmax_cross_entropy(x: Variable, t: Variable) -> Variable:
