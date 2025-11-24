@@ -169,6 +169,11 @@ class Variable:
 
         return sum(self, axis, keepdims)
 
+    def max(self, axis: int | None = None, keepdims: bool = False) -> Variable:
+        from dpl.functions import max
+
+        return max(self, axis, keepdims)
+
     def __getitem__(self: Variable, slices: tuple | int) -> Variable:
         from dpl.functions import get_item
 

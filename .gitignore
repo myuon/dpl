@@ -3,3 +3,4 @@ __pycache__/
 build/
 main.prof
 src/scratch.py
+data/

@@ -38,4 +38,4 @@ def pooling(x: Variable | ndarray, kernel_size: int, stride=1, pad=0) -> Variabl
     col = F.im2col(x, KH, KW, stride, pad).reshape(-1, KH * KW)
     y = col.max(axis=1).reshape(N, OH, OW, C).transpose(0, 3, 1, 2)
 
-    return Variable(y)
+    return y
