@@ -18,3 +18,4 @@ from dpl.functions.relu import relu
 from dpl.functions.dropout import dropout
 from dpl.functions.im2col import im2col, col2im
 from dpl.functions.conv import conv2d, pooling
+from dpl.functions.tanh import tanh

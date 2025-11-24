@@ -42,7 +42,9 @@ class Sum(UnaryFunction):
 
     def backward(self, *gys: Variable) -> Variable:
         (gy,) = gys
-        gy = reshape_sum_backward(gy.data, self.x_shape, self.axis, self.keepdims)
+        gy = reshape_sum_backward(
+            gy.data_required, self.x_shape, self.axis, self.keepdims
+        )
         xp = get_array_module(gy)
         gx = xp.broadcast_to(gy, self.x_shape)
         return as_variable(gx)
