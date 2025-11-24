@@ -2,6 +2,7 @@ from dpl.core.function import Function
 from dpl.core.utils import as_nparray
 from dpl.core.variable import Variable
 import numpy as np
+from dpl import metal
 
 
 class Add(Function):
@@ -30,7 +31,8 @@ class Add(Function):
 def add(
     self: Variable, other: Variable | int | float | np.ndarray | np.number
 ) -> Variable:
-    return Add().apply(self, as_nparray(other))
+    other = as_nparray(other, metal.get_array_module(self.data))
+    return Add().apply(self, other)
 
 
 class Mul(Function):
@@ -53,7 +55,8 @@ class Mul(Function):
 def mul(
     self: Variable, other: Variable | int | float | np.ndarray | np.number
 ) -> Variable:
-    return Mul().apply(self, as_nparray(other))
+    other = as_nparray(other, metal.get_array_module(self.data))
+    return Mul().apply(self, other)
 
 
 class Neg(Function):
@@ -94,13 +97,15 @@ class Sub(Function):
 def sub(
     self: Variable, other: Variable | int | float | np.ndarray | np.number
 ) -> Variable:
-    return Sub().apply(self, as_nparray(other))
+    other = as_nparray(other, metal.get_array_module(self.data))
+    return Sub().apply(self, other)
 
 
 def rsub(
     self: Variable, other: Variable | int | float | np.ndarray | np.number
 ) -> Variable:
-    return Sub().apply(as_nparray(other), self)
+    other = as_nparray(other, metal.get_array_module(self.data))
+    return Sub().apply(other, self)
 
 
 class Div(Function):
@@ -123,13 +128,15 @@ class Div(Function):
 def div(
     self: Variable, other: Variable | int | float | np.ndarray | np.number
 ) -> Variable:
-    return Div().apply(self, as_nparray(other))
+    other = as_nparray(other, metal.get_array_module(self.data))
+    return Div().apply(self, other)
 
 
 def rdiv(
     self: Variable, other: Variable | int | float | np.ndarray | np.number
 ) -> Variable:
-    return Div().apply(as_nparray(other), self)
+    other = as_nparray(other, metal.get_array_module(self.data))
+    return Div().apply(other, self)
 
 
 class Pow(Function):

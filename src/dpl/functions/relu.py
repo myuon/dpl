@@ -1,5 +1,7 @@
 import numpy as np
 from dpl import Function, Variable, as_variable
+from dpl import metal
+import jax.numpy as jnp
 
 
 class ReLU(Function):
@@ -8,9 +10,10 @@ class ReLU(Function):
         assert isinstance(result, Variable)
         return result
 
-    def forward(self, *xs: np.ndarray) -> np.ndarray:
+    def forward(self, *xs: np.ndarray | jnp.ndarray) -> np.ndarray | jnp.ndarray:
         (x,) = xs
-        y = np.maximum(0, x)
+        xp = metal.get_array_module(x)
+        y = xp.maximum(0, x)
         return y
 
     def backward(self, *gys: Variable) -> Variable:

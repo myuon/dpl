@@ -1,9 +1,9 @@
 import numpy as np
 
 
-def as_nparray(x) -> np.ndarray:
+def as_nparray(x, array_module=np) -> np.ndarray:
     if np.isscalar(x):
-        return np.array(x)
+        return array_module.array(x)
 
     return x
 

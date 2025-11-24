@@ -1,4 +1,5 @@
 import numpy as np
+import jax.numpy as jnp
 from dpl.core.utils import as_nparray
 import weakref
 from dpl.core.config import Config
@@ -10,7 +11,7 @@ if TYPE_CHECKING:
 
 
 class Function:
-    def __call__(self, *_inputs: "np.ndarray | Variable"):
+    def __call__(self, *_inputs: "np.ndarray | jnp.ndarray | Variable"):
         inputs = [as_variable(x) for x in _inputs]
 
         xs = [x.data for x in inputs]

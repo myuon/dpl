@@ -3,6 +3,11 @@ import numpy as np
 from typing import TYPE_CHECKING
 from dpl.core.utils import unwrap
 from dpl.core.config import use_config
+import jax.numpy as jnp
+import dpl.metal
+
+
+array_types = (np.ndarray, jnp.ndarray)
 
 if TYPE_CHECKING:
     from function import Function
@@ -11,12 +16,12 @@ if TYPE_CHECKING:
 class Variable:
     __array_priority__ = 200
 
-    def __init__(self, data: np.ndarray, name: str | None = None) -> None:
+    def __init__(self, data: np.ndarray | jnp.ndarray, name: str | None = None) -> None:
         if data is not None:
-            if not isinstance(data, np.ndarray):
+            if not isinstance(data, array_types):
                 raise TypeError(f"{type(data)} is not supported.")
 
-        self.data: np.ndarray = data
+        self.data: np.ndarray | jnp.ndarray = data
         self.name = name
         self.grad: Variable | None = None
         self.creator: "Function | None" = None
@@ -101,6 +106,14 @@ class Variable:
     def cleargrad(self) -> None:
         self.grad = None
 
+    def to_cpu(self):
+        if self.data is not None:
+            self.data = dpl.metal.as_numpy(self.data)
+
+    def to_gpu(self):
+        if self.data is not None:
+            self.data = dpl.metal.as_jax(self.data)
+
     def __mul__(
         self, other: Variable | np.ndarray | int | float | np.number
     ) -> Variable:
@@ -174,7 +187,7 @@ class Variable:
         return get_item(self, slices)
 
 
-def as_variable(obj: np.ndarray | Variable) -> Variable:
+def as_variable(obj: np.ndarray | jnp.ndarray | Variable) -> Variable:
     if isinstance(obj, Variable):
         return obj
     return Variable(obj)

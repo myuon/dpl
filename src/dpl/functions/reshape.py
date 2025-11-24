@@ -1,5 +1,6 @@
 import numpy as np
 from dpl.core import Variable, Function
+import jax.numpy as jnp
 
 
 class Reshape(Function):
@@ -11,7 +12,7 @@ class Reshape(Function):
         assert isinstance(result, Variable)
         return result
 
-    def forward(self, *xs: np.ndarray) -> np.ndarray:
+    def forward(self, *xs: np.ndarray | jnp.ndarray) -> np.ndarray | jnp.ndarray:
         (x,) = xs
         self.x_shape = x.shape
         y = x.reshape(self.shape)

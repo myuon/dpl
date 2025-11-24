@@ -1,5 +1,7 @@
 import numpy as np
 from dpl.core import Variable, Function, as_variable
+from dpl import metal
+import jax.numpy as jnp
 
 
 class BroadcastTo(Function):
@@ -11,10 +13,11 @@ class BroadcastTo(Function):
         assert isinstance(result, Variable)
         return result
 
-    def forward(self, *xs: np.ndarray) -> np.ndarray:
+    def forward(self, *xs: np.ndarray | jnp.ndarray) -> np.ndarray | jnp.ndarray:
         (x,) = xs
         self.x_shape = x.shape
-        y = np.broadcast_to(x, self.shape)
+        xp = metal.get_array_module(x)
+        y = xp.broadcast_to(x, self.shape)
         return y
 
     def backward(self, *gys: Variable) -> Variable:
