@@ -88,7 +88,15 @@ print(f"Sample shape: {x.shape}")
 
 # %%
 # Create CNN model and optimizer
-model = SimpleCNN(num_classes=10, hidden_size=hidden_size)
+model = L.Sequential(
+    L.Conv2d(30, kernel_size=5, stride=1, pad=0),
+    F.relu,
+    lambda x: F.pooling(x, kernel_size=2, stride=2),
+    lambda x: x.reshape(x.shape[0], -1),
+    L.Linear(hidden_size),
+    F.relu,
+    L.Linear(10),
+)
 optimizer = O.SGD(lr=lr).setup(model)
 optimizer.add_hook(O.WeightDecay(1e-4))
 
@@ -119,7 +127,7 @@ for epoch in range(max_epoch):
         x = x.reshape(-1, 1, 28, 28)
         x, t = as_variable(x), as_variable(t)
 
-        y = model.apply(x)
+        y = model(x)
         loss = F.softmax_cross_entropy(y, t)
         acc = F.accuracy(y, t)
         loss.backward()
@@ -157,7 +165,7 @@ for epoch in range(max_epoch):
             # Reshape input to (N, C, H, W) format for CNN
             x = x.reshape(-1, 1, 28, 28)
             x, t = as_variable(x), as_variable(t)
-            y = model.apply(x)
+            y = model(x)
             loss = F.softmax_cross_entropy(y, t)
             acc = F.accuracy(y, t)
 
@@ -210,8 +218,10 @@ plt.show()
 # %%
 # Visualization 3: Conv filters
 with no_grad():
-    # Get the first conv layer weights
-    conv_weights = model.conv1.W.data_required
+    # Get the first conv layer weights (first layer in Sequential)
+    conv_layer = model[0]
+    assert isinstance(conv_layer, L.Conv2d)
+    conv_weights = conv_layer.W.data_required
     print(f"Conv1 weights shape: {conv_weights.shape}")  # (30, 1, 5, 5)
 
     # Visualize the first 16 filters
@@ -240,7 +250,7 @@ with no_grad():
         x_input = x.reshape(1, 1, 28, 28)
         x_var = as_variable(x_input)
 
-        y = model.apply(x_var)
+        y = model(x_var)
         pred_label = int(np.argmax(y.data_required))
 
         ax = axes[idx // 5, idx % 5]
