@@ -37,7 +37,7 @@ class SoftmaxCrossEntropy(BinaryFunction):
         y = softmax(x)
 
         xp = get_array_module(x.data)
-        t_onehot = xp.eye(CLS_NUM, dtype=t.dtype)[t.data.astype(int)]
+        t_onehot = xp.eye(CLS_NUM, dtype=t.dtype)[t.data_required.astype(int)]
         y = (y - t_onehot) * gy
 
         return y, Variable(xp.zeros(t.shape))

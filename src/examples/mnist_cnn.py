@@ -66,7 +66,7 @@ class SimpleCNN(M.Model):
 
 batch_size = 1000
 max_epoch = 5
-hidden_size = 100
+hidden_size = 1000
 lr = 0.1
 
 # Load MNIST dataset
@@ -90,6 +90,7 @@ print(f"Sample shape: {x.shape}")
 # Create CNN model and optimizer
 model = SimpleCNN(num_classes=10, hidden_size=hidden_size)
 optimizer = O.SGD(lr=lr).setup(model)
+optimizer.add_hook(O.WeightDecay(1e-4))
 
 if dpl.metal.gpu_enable:
     model.to_gpu()

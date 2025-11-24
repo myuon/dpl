@@ -25,3 +25,12 @@ class Optimizer:
 
     def add_hook(self, f):
         self.hooks.append(f)
+
+
+class WeightDecay:
+    def __init__(self, rate):
+        self.rate = rate
+
+    def __call__(self, params):
+        for param in params:
+            param.grad.data += self.rate * param.data
