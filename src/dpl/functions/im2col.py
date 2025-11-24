@@ -26,7 +26,7 @@ def _im2col_array_cpu(
 
 
 def _im2col_array_jax(
-    img: ndarray,
+    img,
     N: int,
     C: int,
     filter_h: int,
@@ -34,22 +34,20 @@ def _im2col_array_jax(
     out_h: int,
     out_w: int,
     stride: int,
-    xp,
-) -> ndarray:
-    """JAX version of im2col using immutable operations"""
-    col_list = []
-    for y in range(filter_h):
-        y_max = y + stride * out_h
-        for x in range(filter_w):
-            x_max = x + stride * out_w
-            col_list.append(img[:, :, y:y_max:stride, x:x_max:stride])
+    xp,  # jax.numpy を想定（np でも動く）
+):
+    oh = xp.arange(out_h)[:, None, None, None]  # (out_h, 1,      1,      1)
+    ow = xp.arange(out_w)[None, :, None, None]  # (1,      out_w, 1,      1)
+    kh = xp.arange(filter_h)[None, None, :, None]  # (1, 1, filter_h, 1)
+    kw = xp.arange(filter_w)[None, None, None, :]  # (1, 1, 1,       filter_w)
 
-    # Stack and reshape
-    # col_list has filter_h * filter_w elements, each of shape (N, C, out_h, out_w)
-    col = xp.stack(col_list, axis=-1)  # (N, C, out_h, out_w, filter_h*filter_w)
-    col = col.reshape(N, C, out_h, out_w, filter_h, filter_w)
-    col = col.transpose(0, 2, 3, 1, 4, 5)  # (N, out_h, out_w, C, filter_h, filter_w)
+    iy = oh * stride + kh
+    ix = ow * stride + kw
+
+    col = img[:, :, iy, ix]
+    col = col.transpose(0, 2, 3, 1, 4, 5)
     col = col.reshape(N * out_h * out_w, -1)
+
     return col
 
 
@@ -110,7 +108,7 @@ def _col2im_array_cpu(
 
 
 def _col2im_array_jax(
-    col: ndarray,
+    col,
     N: int,
     C: int,
     H: int,
@@ -122,20 +120,22 @@ def _col2im_array_jax(
     stride: int,
     pad: int,
     xp,
-) -> ndarray:
-    """JAX version of col2im using immutable operations"""
-    img = xp.zeros((N, C, H + 2 * pad + stride - 1, W + 2 * pad + stride - 1))
+):
+    H_padded = H + 2 * pad + stride - 1
+    W_padded = W + 2 * pad + stride - 1
 
-    for y in range(filter_h):
-        y_max = y + stride * out_h
-        for x in range(filter_w):
-            x_max = x + stride * out_w
-            # Use JAX's immutable update syntax
-            img = img.at[:, :, y:y_max:stride, x:x_max:stride].add(
-                col[:, :, y, x, :, :]
-            )
+    img = xp.zeros((N, C, H_padded, W_padded), dtype=col.dtype)
 
-    # パディングを除去
+    y = xp.arange(filter_h)[:, None, None, None]
+    x = xp.arange(filter_w)[None, :, None, None]
+    oh = xp.arange(out_h)[None, None, :, None]
+    ow = xp.arange(out_w)[None, None, None, :]
+
+    iy = y + stride * oh
+    ix = x + stride * ow
+
+    img = img.at[:, :, iy, ix].add(col)
+
     if pad > 0:
         return img[:, :, pad : H + pad, pad : W + pad]
     else:
