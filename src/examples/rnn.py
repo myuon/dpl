@@ -8,6 +8,7 @@ from dpl import Model, as_variable
 import dpl.layers as L
 import dpl.functions as F
 import dpl.optimizers as O
+from dpl.datasets.dataloader import SequentialDataLoader
 
 
 class SimpleRNN(Model):
@@ -32,6 +33,7 @@ import datasets
 import matplotlib.pyplot as plt
 
 train_set = datasets.SinCurve(train=True)
+test_set = datasets.SinCurve(train=False)
 
 xs = [p[0] for p in train_set]
 ts = [p[1] for p in train_set]
@@ -43,31 +45,47 @@ plt.show()
 max_epoch = 100
 hidden_size = 100
 bptt_length = 30
+batch_size = 1
 
 model = SimpleRNN(hidden_size=hidden_size, out_size=1)
 optimizer = O.Adam().setup(model)
+
+# Create SequentialDataLoader
+dataloader = SequentialDataLoader(
+    train_set, batch_size=batch_size, bptt_length=bptt_length
+)
 
 loss_history = []
 
 for epoch in range(max_epoch):
     model.reset_state()
     total_loss = as_variable(np.array(0.0))
-    count = 0
+    loss_count = 0
 
-    for x, t in train_set:
-        y_batch = model(x.reshape(1, 1))
-        loss = F.mean_squared_error(y_batch, t.reshape(1, 1))
-        count += 1
-        total_loss += loss
-        if count % bptt_length != 0:
-            continue
+    for xs_batch, ts_batch in dataloader:
+        # xs_batch shape: (batch_size, bptt_length)
+        # ts_batch shape: (batch_size, bptt_length)
+
+        # Process each time step in the sequence
+        loss = as_variable(np.array(0.0))
+        for t in range(xs_batch.shape[1]):
+            x = as_variable(xs_batch[:, t].reshape(batch_size, 1))
+            target = as_variable(ts_batch[:, t].reshape(batch_size, 1))
+            y = model(x)
+            loss += F.mean_squared_error(y, target)
+
+        # Average loss over the sequence
+        loss = loss / xs_batch.shape[1]
 
         model.cleargrads()
         loss.backward()
         loss.unchain_backward()
         optimizer.update()
 
-    avg_loss = total_loss / (len(xs) - 1)
+        total_loss += loss
+        loss_count += 1
+
+    avg_loss = total_loss / loss_count
     loss_history.append(avg_loss.data_required.astype(float).item())
     print(f"Epoch {epoch + 1}/{max_epoch}, Loss: {avg_loss}")
 
@@ -82,15 +100,18 @@ plt.grid(True)
 plt.show()
 
 # %%
+import dpl
+
 model.reset_state()
 predictions = []
 true_values = []
 
-for x, t in train_set:
-    y = model(x.reshape(1, 1))
-    if y.data is not None:
-        predictions.append(float(y.data[0, 0]))
-        true_values.append(float(t[0]))
+with dpl.no_grad():
+    for x, t in test_set:
+        y = model(x.reshape(1, 1))
+        if y.data is not None:
+            predictions.append(float(y.data[0, 0]))
+            true_values.append(float(t[0]))
 
 plt.figure(figsize=(12, 6))
 plt.plot(true_values, label="True Values", alpha=0.7)
