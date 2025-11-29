@@ -121,6 +121,19 @@ class Variable:
         if self.data is not None:
             self.data = metal.as_jax(self.data)
 
+    def unchain(self):
+        self.creator = None
+
+    def unchain_backward(self):
+        if self.creator is not None:
+            stack = [self.creator]
+            while stack:
+                f = stack.pop()
+                for x in f.inputs:
+                    if x.creator is not None:
+                        stack.append(x.creator)
+                        x.unchain()
+
     def __mul__(self, other: Variable | ndarray | int | float | np.number) -> Variable:
         raise NotImplementedError()
 

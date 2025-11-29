@@ -6,8 +6,8 @@ class Dataset:
     def __init__(self, train=True, transform: Callable | None = None):
         self.train = train
         self.transform: Callable = transform if transform is not None else lambda x: x
-        self.data: dict[Any, Any] = {}
-        self.label = None
+        self.data: dict[Any, Any] | np.ndarray = {}
+        self.label: np.ndarray | None = None
 
         self.prepare()
 

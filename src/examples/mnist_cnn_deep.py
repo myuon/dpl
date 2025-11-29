@@ -14,8 +14,8 @@ import datasets
 import dpl
 import numpy as np
 
-batch_size = 1000
-max_epoch = 20
+batch_size = 4000
+max_epoch = 30
 hidden_size = 100
 lr = 0.1
 
