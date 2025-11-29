@@ -19,12 +19,15 @@ class Layer:
         output = self.forward(*inputs)
 
         self.inputs = [weakref.ref(x) for x in inputs]
-        self.outputs = [weakref.ref(output)]
+        self.outputs = (
+            [weakref.ref(wr) for wr in output]
+            if isinstance(output, tuple)
+            else [weakref.ref(output)]
+        )
         return output
 
     def forward(self, *inputs: Variable) -> Variable:
         raise NotImplementedError()
-
 
     def params(self):
         for name in self._params:

@@ -94,8 +94,7 @@ vocabulary_size = len(word_to_id)  # type: ignore
 hidden_size = 100
 sample_size = 5
 max_epoch = 15
-batch_size = 1000
-lr = 0.01
+batch_size = 256
 
 print("\n" + "=" * 60)
 print("Training Configuration")
@@ -105,13 +104,14 @@ print(f"Hidden size: {hidden_size}")
 print(f"Negative samples: {sample_size}")
 print(f"Max epoch: {max_epoch}")
 print(f"Batch size: {batch_size}")
-print(f"Learning rate: {lr}")
 print(f"Training samples: {len(target)}")
 print("=" * 60 + "\n")
 
 
 # %%
 # Create CBOW dataset and dataloader
+from dpl import Layer, Variable
+
 cbow_dataset = CBOWDataset(contexts, target)
 cbow_loader = DataLoader(cbow_dataset, batch_size=batch_size, shuffle=True)
 
@@ -123,53 +123,100 @@ model = CBOWNegativeSamplingModel(
     corpus=corpus,  # Pass corpus for negative sampling
 )
 
-optimizer = O.Adam(lr=lr).setup(model)
+optimizer = O.Adam().setup(model)
 
-# Custom training loop (Trainer doesn't support our use case well)
-print("Starting training...")
 
-from dpl.core import as_variable
+# Create a wrapper class that adapts the model for Trainer
+class Word2VecModelWrapper(Layer):
+    """
+    Wrapper to adapt CBOWNegativeSamplingModel for Trainer.
 
-loss_history = []
+    Trainer expects model(x) to return a single value, but our model
+    needs both contexts and target, and returns a tuple.
+    This wrapper stores the target and handles the tuple return.
+    """
 
-for epoch in range(1, max_epoch + 1):
-    model.cleargrads()
+    def __init__(self, model: CBOWNegativeSamplingModel):
+        super().__init__()
+        self.model = model
+        self._target = None
 
-    epoch_loss = 0.0
-    batch_count = 0
+    def forward(self, *xs: Variable):
+        """
+        Args:
+            x: contexts from DataLoader
 
-    for contexts, target in cbow_loader:
-        # Convert to Variables
-        contexts_var = as_variable(contexts)
-        target_var = as_variable(target)
+        Returns:
+            Tuple of (target_score, negative_scores)
+        """
+        # x is contexts, self._target is set by preprocess_fn
+        return self.model(*xs, self._target)
 
-        # Forward pass - model generates negative samples internally
-        # Returns (target_score, negative_scores)
-        target_score, negative_scores = model(contexts_var, target_var)
+    def set_target(self, target):
+        """Store target for next forward pass"""
+        self._target = target
 
-        # Compute loss
-        loss = F.negative_sampling_loss(
-            target_score, negative_scores, sample_size=sample_size
-        )
 
-        # Backward pass
-        loss.backward()
-        optimizer.update()
-        model.cleargrads()
+# Wrap the model
+wrapped_model = Word2VecModelWrapper(model)
 
-        # Track loss
-        loss_data = loss.data
-        assert loss_data is not None
-        epoch_loss += float(loss_data) * len(target)  # type: ignore
-        batch_count += len(target)
 
-    avg_loss = epoch_loss / batch_count
-    loss_history.append(avg_loss)
-    print(f"Epoch {epoch}/{max_epoch} - Loss: {avg_loss:.4f}")
+# Preprocess function that stores target in the wrapper
+def preprocess_fn(x, t):
+    """
+    Store target in wrapper and return contexts.
+
+    Args:
+        x: contexts from DataLoader
+        t: target from DataLoader
+
+    Returns:
+        (contexts, target) for Trainer
+    """
+    from dpl.core import as_variable
+
+    wrapped_model.set_target(as_variable(t))
+    return x, t
+
+
+# Define loss function for Trainer
+def word2vec_loss_fn(y, t):
+    """
+    Loss function for word2vec with negative sampling.
+
+    Args:
+        y: Tuple of (target_score, negative_scores) from model
+        t: Target (unused, kept for Trainer interface compatibility)
+
+    Returns:
+        Loss value
+    """
+    target_score, negative_scores = y
+    return F.negative_sampling_loss(
+        target_score, negative_scores, sample_size=sample_size
+    )
+
+
+# Train using Trainer
+from dpl.trainer import Trainer
+
+trainer = Trainer(
+    model=wrapped_model,
+    optimizer=optimizer,
+    loss_fn=word2vec_loss_fn,
+    train_loader=cbow_loader,
+    max_epoch=max_epoch,
+    preprocess_fn=preprocess_fn,
+)
+
+trainer.run()
 
 print("\n" + "=" * 60)
 print("Training completed!")
 print("=" * 60)
+
+# Get loss history from trainer
+loss_history = trainer.train_loss_history
 
 
 # %%

@@ -245,16 +245,6 @@ class CBOWNegativeSamplingModel(Model):
         if corpus is not None:
             self.sampler = UnigramSampler(corpus, sample_size=sample_size)
 
-    def __call__(self, *inputs: Variable):  # type: ignore
-        """Override to handle tuple return"""
-        import weakref
-
-        output = self.forward(*inputs)
-
-        self.inputs = [weakref.ref(x) for x in inputs]
-        # Don't store outputs since we return a tuple
-        return output
-
     def forward(self, *xs: Variable) -> tuple[Variable, Variable]:  # type: ignore
         """
         Args:
