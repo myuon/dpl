@@ -1,7 +1,4 @@
 import numpy as np
-import sys
-
-sys.path.insert(0, "../src")
 
 from dpl import Variable
 from dpl.functions.conv import pooling

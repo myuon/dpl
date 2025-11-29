@@ -1,5 +1,5 @@
 import numpy as np
-from layers.convolution import Convolution, im2col, col2im
+from dpl import Convolution, im2col, col2im
 
 
 def test_im2col_col2im():

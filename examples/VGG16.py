@@ -1,10 +1,4 @@
 # %%
-import sys
-from pathlib import Path
-
-# Add parent directory to path so imports work regardless of where script is run from
-sys.path.append(str(Path(__file__).parent.parent))
-
 from dpl import no_grad, as_variable
 from models import VGG16
 from PIL import Image

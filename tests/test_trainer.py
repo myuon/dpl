@@ -1,9 +1,3 @@
-import sys
-from pathlib import Path
-
-# srcディレクトリをPythonパスに追加
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
 import numpy as np
 from dpl import as_variable, DataLoader, Trainer
 import dpl.functions as F

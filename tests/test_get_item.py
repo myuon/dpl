@@ -1,6 +1,4 @@
 import numpy as np
-import sys
-sys.path.insert(0, '/Users/ioijoi/ghq/github.com/myuon/dpl/src')
 
 from dpl import Variable
 import dpl.functions as F

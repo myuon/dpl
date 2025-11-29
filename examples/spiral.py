@@ -1,10 +1,4 @@
 # %%
-import sys
-from pathlib import Path
-
-# Add parent directory to path so imports work regardless of where script is run from
-sys.path.append(str(Path(__file__).parent.parent))
-
 from dpl import as_variable, DataLoader, no_grad
 import dpl.functions as F
 import dpl.models as M

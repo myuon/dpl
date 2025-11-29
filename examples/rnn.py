@@ -1,9 +1,4 @@
 # %%
-import pathlib
-import sys
-
-sys.path.append(str(pathlib.Path(__file__).parent.parent))
-
 from dpl import Model, as_variable
 import dpl.layers as L
 import dpl.functions as F
