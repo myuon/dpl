@@ -4,3 +4,4 @@ build/
 main.prof
 src/scratch.py
 data/
+*.egg-info/
