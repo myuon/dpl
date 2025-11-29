@@ -25,6 +25,7 @@ class Layer:
     def forward(self, *inputs: Variable) -> Variable:
         raise NotImplementedError()
 
+
     def params(self):
         for name in self._params:
             value = self.__dict__[name]
@@ -86,3 +87,17 @@ class Layer:
                 param.data = loaded[k]
             else:
                 raise KeyError(f"Key '{k}' not found in the loaded weights.")
+
+
+class UnaryLayer(Layer):
+    def apply(self, x: Variable) -> Variable:
+        result = super().__call__(x)
+        assert isinstance(result, Variable)
+        return result
+
+
+class BinaryLayer(Layer):
+    def apply(self, x0: Variable, x1: Variable) -> Variable:
+        result = super().__call__(x0, x1)
+        assert isinstance(result, Variable)
+        return result

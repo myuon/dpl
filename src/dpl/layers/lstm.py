@@ -1,10 +1,10 @@
 from dpl.core import Variable
-from dpl.layers import Layer
+from dpl.layers.layer import UnaryLayer
 import dpl.layers as L
 import dpl.functions as F
 
 
-class LSTM(Layer):
+class LSTM(UnaryLayer):
     """
     Long Short-Term Memory (LSTM) layer.
 

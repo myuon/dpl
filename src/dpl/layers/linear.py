@@ -1,10 +1,10 @@
 import numpy as np
 from dpl.core import Variable
-from dpl.layers.layer import Parameter, Layer
+from dpl.layers.layer import Parameter, UnaryLayer
 import dpl.functions as F
 
 
-class Linear(Layer):
+class Linear(UnaryLayer):
     def __init__(
         self,
         out_size: int,
@@ -31,13 +31,6 @@ class Linear(Layer):
         I, O = self.in_size, self.out_size
         W_data = np.random.randn(I, O).astype(self.dtype) * np.sqrt(1 / I)
         self.W.data = W_data
-
-    def apply(self, x: Variable) -> Variable:
-        result = super().__call__(x)
-        assert isinstance(
-            result, Variable
-        ), f"Result must be a Variable but got {type(result)}"
-        return result
 
     def forward(self, *xs: Variable) -> Variable:
         (x,) = xs

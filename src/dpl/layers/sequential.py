@@ -23,5 +23,10 @@ class Sequential(Layer):
             out = layer(out)
         return out
 
+    def apply(self, *xs: Variable) -> Variable:
+        result = super().__call__(*xs)
+        assert isinstance(result, Variable)
+        return result
+
     def __getitem__(self, name: str) -> Layer:
         return getattr(self, name)

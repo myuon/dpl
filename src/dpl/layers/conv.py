@@ -1,10 +1,10 @@
 import numpy as np
 from dpl.core import get_random_module, Variable
-from dpl.layers import Layer, Parameter
+from dpl.layers.layer import UnaryLayer, Parameter
 import dpl.functions as F
 
 
-class Conv2d(Layer):
+class Conv2d(UnaryLayer):
     def __init__(
         self,
         out_channels: int,
@@ -42,11 +42,6 @@ class Conv2d(Layer):
         scale = np.sqrt(1.0 / (C * KH * KW))
         W_data = xp.randn(OC, C, KH, KW).astype(np.float32) * scale
         self.W.data = W_data
-
-    def apply(self, x: Variable) -> Variable:
-        result = super().__call__(x)
-        assert isinstance(result, Variable)
-        return result
 
     def prepare(self, x: Variable) -> None:
         if self.W.data is None:
