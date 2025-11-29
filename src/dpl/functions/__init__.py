@@ -20,3 +20,5 @@ from dpl.functions.im2col import im2col, col2im
 from dpl.functions.conv import conv2d, pooling
 from dpl.functions.tanh import tanh
 from dpl.functions.embed import embed
+from dpl.functions.negative_sampling import negative_sampling_loss
+from dpl.functions.concat import concat

@@ -5,3 +5,8 @@ main.prof
 src/scratch.py
 data/
 *.egg-info/
+examples/datasets/ptb.test*
+examples/datasets/ptb.train*
+examples/datasets/ptb.valid*
+examples/datasets/ptb.vocab*
+*.npz
