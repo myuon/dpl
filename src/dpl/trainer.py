@@ -1,7 +1,7 @@
 from typing import Callable, Optional
 import time
 from dpl.core import Variable, as_variable, no_grad, ndarray
-from dpl.datasets import DataLoader
+from dpl.dataloaders import DataLoader
 from dpl.layers import Layer
 from dpl.optimizers import Optimizer
 

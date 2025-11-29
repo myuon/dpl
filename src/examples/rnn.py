@@ -8,7 +8,7 @@ from dpl import Model, as_variable
 import dpl.layers as L
 import dpl.functions as F
 import dpl.optimizers as O
-from dpl.datasets.dataloader import SequentialDataLoader
+from dpl.dataloaders import SequentialDataLoader
 
 
 class SimpleRNN(Model):

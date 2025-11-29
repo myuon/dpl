@@ -8,7 +8,7 @@ from pathlib import Path
 # src をパスに追加
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from dpl.datasets.dataloader import SequentialDataLoader
+from dpl.dataloaders import SequentialDataLoader
 
 
 class DummySequentialDataset:
