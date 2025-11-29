@@ -1,9 +1,3 @@
-import sys
-from pathlib import Path
-
-# srcディレクトリをPythonパスに追加
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
 import numpy as np
 from layers.convolution import Convolution, im2col, col2im
 
@@ -11,15 +5,15 @@ from layers.convolution import Convolution, im2col, col2im
 def test_im2col_col2im():
     """im2colとcol2imの動作確認"""
     # 簡単な入力データを作成 (1バッチ, 1チャンネル, 3x3画像)
-    x = np.array([[[[1, 2, 3],
-                    [4, 5, 6],
-                    [7, 8, 9]]]], dtype=float)
+    x = np.array([[[[1, 2, 3], [4, 5, 6], [7, 8, 9]]]], dtype=float)
 
     # 2x2のフィルタでim2col
     col = im2col(x, filter_h=2, filter_w=2, stride=1, pad=0)
     print("im2col result:")
     print(col)
-    print(f"shape: {col.shape}")  # (4, 4) になるはず (2x2の出力領域 x 2x2のフィルタサイズ)
+    print(
+        f"shape: {col.shape}"
+    )  # (4, 4) になるはず (2x2の出力領域 x 2x2のフィルタサイズ)
 
     # col2imで元に戻す
     x_reconstructed = col2im(col, x.shape, filter_h=2, filter_w=2, stride=1, pad=0)
@@ -72,8 +66,12 @@ def test_convolution_gradient():
 
     print("\nGradient check:")
     print(f"dx shape: {dx.shape}, expected: {x.shape}")
-    print(f"dW shape: {conv.dW.shape if conv.dW is not None else None}, expected: {W.shape}")
-    print(f"db shape: {conv.db.shape if conv.db is not None else None}, expected: {b.shape}")
+    print(
+        f"dW shape: {conv.dW.shape if conv.dW is not None else None}, expected: {W.shape}"
+    )
+    print(
+        f"db shape: {conv.db.shape if conv.db is not None else None}, expected: {b.shape}"
+    )
 
     # 数値微分でチェック（簡易版）
     def f(W_):

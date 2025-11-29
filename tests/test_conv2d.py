@@ -1,8 +1,4 @@
 import numpy as np
-import sys
-
-sys.path.insert(0, "../src")
-
 from dpl import Variable
 import dpl.functions as F
 
@@ -145,9 +141,15 @@ def test_conv2d_backward():
     assert b.grad is not None, "b.grad should not be None"
 
     # Check gradient shapes
-    assert x.grad.shape == x.shape, f"x.grad shape mismatch: {x.grad.shape} vs {x.shape}"
-    assert Q.grad.shape == Q.shape, f"Q.grad shape mismatch: {Q.grad.shape} vs {Q.shape}"
-    assert b.grad.shape == b.shape, f"b.grad shape mismatch: {b.grad.shape} vs {b.shape}"
+    assert (
+        x.grad.shape == x.shape
+    ), f"x.grad shape mismatch: {x.grad.shape} vs {x.shape}"
+    assert (
+        Q.grad.shape == Q.shape
+    ), f"Q.grad shape mismatch: {Q.grad.shape} vs {Q.shape}"
+    assert (
+        b.grad.shape == b.shape
+    ), f"b.grad shape mismatch: {b.grad.shape} vs {b.shape}"
 
     # Check that gradients are not all zeros
     assert not np.allclose(x.grad.data, 0), "x.grad should not be all zeros"
@@ -188,8 +190,11 @@ def test_conv2d_gradient_check():
 
     assert x.grad is not None, "x.grad should not be None"
     np.testing.assert_allclose(
-        x.grad.data, numerical_grad_x, rtol=1e-3, atol=1e-4,
-        err_msg="Gradient mismatch for x"
+        x.grad.data,
+        numerical_grad_x,
+        rtol=1e-3,
+        atol=1e-4,
+        err_msg="Gradient mismatch for x",
     )
 
     # Test gradient for Q (weights)
@@ -213,8 +218,11 @@ def test_conv2d_gradient_check():
 
     assert Q.grad is not None, "Q.grad should not be None"
     np.testing.assert_allclose(
-        Q.grad.data, numerical_grad_Q, rtol=1e-3, atol=1e-4,
-        err_msg="Gradient mismatch for Q"
+        Q.grad.data,
+        numerical_grad_Q,
+        rtol=1e-3,
+        atol=1e-4,
+        err_msg="Gradient mismatch for Q",
     )
 
     # Test gradient for b (bias)
@@ -237,8 +245,11 @@ def test_conv2d_gradient_check():
 
     assert b.grad is not None, "b.grad should not be None"
     np.testing.assert_allclose(
-        b.grad.data, numerical_grad_b, rtol=1e-3, atol=1e-4,
-        err_msg="Gradient mismatch for b"
+        b.grad.data,
+        numerical_grad_b,
+        rtol=1e-3,
+        atol=1e-4,
+        err_msg="Gradient mismatch for b",
     )
 
     print("✓ test_conv2d_gradient_check passed (x, Q, and b gradients verified)")
@@ -247,9 +258,7 @@ def test_conv2d_gradient_check():
 def test_conv2d_known_output():
     """Test conv2d with known output values"""
     # Create a simple known input
-    x = Variable(np.array([[[[1, 2, 3],
-                             [4, 5, 6],
-                             [7, 8, 9]]]]).astype(np.float32))
+    x = Variable(np.array([[[[1, 2, 3], [4, 5, 6], [7, 8, 9]]]]).astype(np.float32))
 
     # Simple filter that sums the top-left 2x2 region
     Q = Variable(np.ones((1, 1, 2, 2)).astype(np.float32))
@@ -263,11 +272,11 @@ def test_conv2d_known_output():
     # Top-right: 2+3+5+6 = 16
     # Bottom-left: 4+5+7+8 = 24
     # Bottom-right: 5+6+8+9 = 28
-    expected = np.array([[[[12, 16],
-                           [24, 28]]]]).astype(np.float32)
+    expected = np.array([[[[12, 16], [24, 28]]]]).astype(np.float32)
 
-    np.testing.assert_allclose(y.data, expected, rtol=1e-5,
-                               err_msg=f"Expected:\n{expected}\nGot:\n{y.data}")
+    np.testing.assert_allclose(
+        y.data, expected, rtol=1e-5, err_msg=f"Expected:\n{expected}\nGot:\n{y.data}"
+    )
 
     print("✓ test_conv2d_known_output passed")
 
