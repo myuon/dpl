@@ -141,58 +141,118 @@ for i in range(min(3, len(target))):
 
 
 # %%
-# Training with SimpleCBOW
+# CBOW Dataset
+from dpl.datasets import Dataset
+
+
+class CBOWDataset(Dataset):
+    """
+    Dataset for CBOW model that returns context words and target word.
+    """
+
+    def __init__(self, contexts: np.ndarray, target: np.ndarray):
+        """
+        Args:
+            contexts: Array of context word IDs (num_samples, 2*window_size)
+            target: Array of target word IDs (num_samples,)
+        """
+        self.contexts = contexts
+        self.target = target
+
+    def __getitem__(self, index):
+        """
+        Returns:
+            contexts: Context word IDs for this sample (2,) for window_size=1
+            target: Target word ID
+        """
+        return self.contexts[index], self.target[index]
+
+    def __len__(self):
+        return len(self.target)
+
+    def prepare(self):
+        pass
+
+
+# %%
+# CBOW Model wrapper for Trainer
+from dpl import Model
+
+
+class CBOWModel(Model):
+    """
+    Wrapper for SimpleCBOW that takes contexts as a single input.
+    This is compatible with the Trainer API.
+    """
+
+    def __init__(self, vocabulary_size: int, hidden_size: int):
+        super().__init__()
+        self.cbow = SimpleCBOW(vocabulary_size=vocabulary_size, hidden_size=hidden_size)
+
+    def forward(self, *xs: Variable) -> Variable:
+        """
+        Args:
+            contexts: Context words (batch_size, 2) - contains [context0, context1]
+
+        Returns:
+            Logits for target word prediction (batch_size, vocabulary_size)
+        """
+        (contexts,) = xs
+        # Split contexts into context0 and context1
+        context0 = contexts[:, 0]
+        context1 = contexts[:, 1]
+
+        # Convert to Variables
+        context0_var = as_variable(context0)
+        context1_var = as_variable(context1)
+
+        # Forward through CBOW model
+        return self.cbow(context0_var, context1_var)
+
+
+# %%
+# Training with Trainer
 import dpl.optimizers as O
 import matplotlib.pyplot as plt
+from dpl.dataloaders import DataLoader
+from dpl import Trainer
 
 # Hyperparameters
 vocabulary_size = len(word_to_id)
 hidden_size = 5
-max_epoch = 300
+max_epoch = 100
+batch_size = 2
 lr = 1.0
 
+# Create CBOW dataset and dataloader
+cbow_dataset = CBOWDataset(contexts, target)
+cbow_loader = DataLoader(cbow_dataset, batch_size=batch_size, shuffle=True)
+
 # Create model
-model = SimpleCBOW(vocabulary_size=vocabulary_size, hidden_size=hidden_size)
+model = CBOWModel(vocabulary_size=vocabulary_size, hidden_size=hidden_size)
 optimizer = O.SGD(lr=lr).setup(model)
 
-# Extract context0 and context1 from contexts
-# For window_size=1, contexts has shape (num_samples, 2)
-context0 = contexts[:, 0]  # First context word
-context1 = contexts[:, 1]  # Second context word
+# Create Trainer
+trainer = Trainer(
+    model=model,
+    optimizer=optimizer,
+    loss_fn=F.softmax_cross_entropy,
+    train_loader=cbow_loader,
+    max_epoch=max_epoch,
+)
 
 print(f"\nTraining with {len(target)} samples")
 print(f"Vocabulary size: {vocabulary_size}")
 print(f"Hidden size: {hidden_size}")
 print(f"Max epoch: {max_epoch}")
-print(f"Learning rate: {lr}")
+print(f"Batch size: {batch_size}")
+print(f"Learning rate: {lr}\n")
 
-# Training loop
-loss_history = []
+# Run training
+trainer.run()
 
-for epoch in range(max_epoch):
-    # Convert to Variables
-    context0_var = as_variable(context0)
-    context1_var = as_variable(context1)
-    target_var = as_variable(target)
-
-    # Forward pass
-    out = model(context0_var, context1_var)
-
-    # Calculate loss
-    loss = F.softmax_cross_entropy(out, target_var)
-
-    # Backward pass
-    model.cleargrads()
-    loss.backward()
-    optimizer.update()
-
-    # Track loss
-    loss_value = float(loss.data_required)
-    loss_history.append(loss_value)
-
-    # Print progress
-    if (epoch + 1) % 50 == 0 or epoch == 0:
-        print(f"Epoch {epoch + 1}/{max_epoch}, Loss: {loss_value:.4f}")
+# Get loss history from trainer
+loss_history = trainer.train_loss_history
 
 print("\nTraining completed!")
 
@@ -209,9 +269,59 @@ plt.show()
 # %%
 # Test the learned embeddings
 print("\nLearned word embeddings (Win):")
-if model.Win.data is not None:
+if model.cbow.Win.data is not None:
     for word_id, word in id_to_word.items():
-        embedding = model.Win.data[word_id]
+        embedding = model.cbow.Win.data[word_id]
         print(f"{word}: {embedding}")
+
+# %%
+# Visualize word embeddings as heatmap
+if model.cbow.Win.data is not None:
+    # Get embedding matrix
+    embeddings = model.cbow.Win.data  # Shape: (vocabulary_size, hidden_size)
+
+    # Create word labels in order
+    word_labels = [id_to_word[i] for i in range(len(id_to_word))]
+
+    # Create dimension labels
+    dim_labels = [f"Dim {i}" for i in range(hidden_size)]
+
+    # Create heatmap using matplotlib
+    fig, ax = plt.subplots(figsize=(10, 8))
+
+    # Create heatmap
+    im = ax.imshow(embeddings, cmap="coolwarm", aspect="auto")
+
+    # Set ticks and labels
+    ax.set_xticks(np.arange(hidden_size))
+    ax.set_yticks(np.arange(vocabulary_size))
+    ax.set_xticklabels(dim_labels)
+    ax.set_yticklabels(word_labels)
+
+    # Rotate the tick labels for better readability
+    plt.setp(ax.get_xticklabels(), rotation=0, ha="center")
+
+    # Add colorbar
+    cbar = plt.colorbar(im, ax=ax)
+    cbar.set_label("Embedding Value", rotation=270, labelpad=20)
+
+    # Add text annotations
+    for i in range(vocabulary_size):
+        for j in range(hidden_size):
+            text = ax.text(
+                j,
+                i,
+                f"{embeddings[i, j]:.2f}",
+                ha="center",
+                va="center",
+                color="black" if abs(embeddings[i, j]) < 1.5 else "white",
+                fontsize=9,
+            )
+
+    ax.set_title("Word Embeddings Heatmap", fontsize=14, fontweight="bold", pad=20)
+    ax.set_xlabel("Embedding Dimensions", fontsize=12)
+    ax.set_ylabel("Words", fontsize=12)
+    plt.tight_layout()
+    plt.show()
 
 # %%
