@@ -4,3 +4,4 @@ from dpl.layers.conv import Conv2d
 from dpl.layers.sequential import Sequential
 from dpl.layers.rnn import RNN
 from dpl.layers.lstm import LSTM
+from dpl.layers.embedding import Embedding
