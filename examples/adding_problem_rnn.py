@@ -38,14 +38,11 @@ class AddingRNN(Model):
 
 
 # %%
-import sys
-
-sys.path.append("examples")
 from datasets.adding_problem import AddingProblem
 import matplotlib.pyplot as plt
 
 # Create dataset
-sequence_length = 10
+sequence_length = 15
 num_samples = 10000
 
 train_set = AddingProblem(
@@ -274,8 +271,8 @@ ax1.grid(True)
 # Right plot: Residual Distribution
 residuals = np.array(predictions) - np.array(true_values)
 ax2 = axes[1]
-ax2.hist(residuals, bins=30, alpha=0.7, edgecolor='black')
-ax2.axvline(x=0, color='r', linestyle='--', label='Zero Residual')
+ax2.hist(residuals, bins=30, alpha=0.7, edgecolor="black")
+ax2.axvline(x=0, color="r", linestyle="--", label="Zero Residual")
 ax2.set_xlabel("Residual (Predicted - True)")
 ax2.set_ylabel("Frequency")
 ax2.set_title("Residual Distribution")
@@ -284,7 +281,13 @@ ax2.set_title("Residual Distribution")
 mean_residual = np.mean(residuals)
 std_residual = np.std(residuals)
 median_residual = np.median(residuals)
-ax2.axvline(x=mean_residual, color='g', linestyle='-', linewidth=2, label=f'Mean: {mean_residual:.4f}')
+ax2.axvline(
+    x=mean_residual,
+    color="g",
+    linestyle="-",
+    linewidth=2,
+    label=f"Mean: {mean_residual:.4f}",
+)
 ax2.legend()
 ax2.grid(True, alpha=0.3)
 
