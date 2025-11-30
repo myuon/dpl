@@ -92,6 +92,14 @@ class Layer:
                 raise KeyError(f"Key '{k}' not found in the loaded weights.")
 
 
+class StatefulLayer(Layer):
+    """Base class for layers that maintain internal state."""
+
+    def reset_state(self):
+        """Reset layer state. Override in subclasses."""
+        pass
+
+
 class UnaryLayer(Layer):
     def apply(self, x: Variable) -> Variable:
         result = super().__call__(x)

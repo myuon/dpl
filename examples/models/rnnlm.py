@@ -50,10 +50,7 @@ class RNNLM(Layer):
 
     def reset_state(self):
         """Reset RNN hidden state."""
-        # Reset state for all layers that have reset_state method
-        for layer in self.model.layers:
-            if hasattr(layer, 'reset_state') and callable(getattr(layer, 'reset_state')):
-                getattr(layer, 'reset_state')()
+        self.model.reset_state()
 
     def forward(self, *xs: Variable) -> Variable:
         """

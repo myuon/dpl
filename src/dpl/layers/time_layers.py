@@ -5,7 +5,7 @@ These layers apply the same operation at each time step in a sequence.
 """
 import numpy as np
 from dpl.core import Variable
-from dpl.layers.layer import Layer
+from dpl.layers.layer import Layer, StatefulLayer
 from dpl.layers.embedding import Embedding
 from dpl.layers.linear import Linear
 from dpl.layers.rnn import RNN
@@ -48,7 +48,7 @@ class TimeEmbedding(Layer):
         return out
 
 
-class TimeRNN(Layer):
+class TimeRNN(StatefulLayer):
     """
     Time-distributed RNN layer.
 
@@ -101,7 +101,7 @@ class TimeRNN(Layer):
         return out
 
 
-class TimeLSTM(Layer):
+class TimeLSTM(StatefulLayer):
     """
     Time-distributed LSTM layer.
 

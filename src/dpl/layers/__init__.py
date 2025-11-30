@@ -1,4 +1,4 @@
-from dpl.layers.layer import Parameter, Layer, UnaryLayer, BinaryLayer
+from dpl.layers.layer import Parameter, Layer, StatefulLayer, UnaryLayer, BinaryLayer
 from dpl.layers.linear import Linear
 from dpl.layers.conv import Conv2d
 from dpl.layers.sequential import Sequential

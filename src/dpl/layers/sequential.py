@@ -1,5 +1,5 @@
 from dpl.core import Variable
-from dpl.layers.layer import Layer
+from dpl.layers.layer import Layer, StatefulLayer
 from typing import Callable
 
 
@@ -27,6 +27,12 @@ class Sequential(Layer):
         result = super().__call__(*xs)
         assert isinstance(result, Variable)
         return result
+
+    def reset_state(self):
+        """Reset state for all stateful layers."""
+        for layer in self.layers:
+            if isinstance(layer, StatefulLayer):
+                layer.reset_state()
 
     def __getitem__(self, name: str) -> Layer:
         return getattr(self, name)
