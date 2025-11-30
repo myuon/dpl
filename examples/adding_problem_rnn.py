@@ -46,7 +46,7 @@ import matplotlib.pyplot as plt
 
 # Create dataset
 sequence_length = 10
-num_samples = 10
+num_samples = 10000
 
 train_set = AddingProblem(
     num_samples=num_samples, sequence_length=sequence_length, train=True
@@ -84,13 +84,16 @@ test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False)
 
 # Select a fixed sample for tracking hidden states
 import dpl
+
 sample_idx = 0
 sample_x, sample_t = train_set[sample_idx]
 sample_x_batch = sample_x[np.newaxis, :]  # Add batch dimension
 
 # Storage for hidden states across epochs
 hidden_states_history = []
-epochs_to_record = list(range(0, max_epoch, max(1, max_epoch // 10)))  # Record ~10 snapshots
+epochs_to_record = list(
+    range(0, max_epoch, max(1, max_epoch // 10))
+)  # Record ~10 snapshots
 
 # Create Trainer
 trainer = Trainer(
@@ -105,6 +108,7 @@ trainer = Trainer(
 # Custom training loop with hidden state recording
 print(f"Starting training for {max_epoch} epochs...")
 import time
+
 start_time = time.time()
 
 for epoch in range(max_epoch):
@@ -120,10 +124,9 @@ for epoch in range(max_epoch):
             hs = model.rnn(x_var)  # (1, T, H)
             # Extract the hidden states and convert to numpy
             hidden_states = hs.data_required[0]  # (T, H)
-            hidden_states_history.append({
-                'epoch': epoch + 1,
-                'states': hidden_states.copy()
-            })
+            hidden_states_history.append(
+                {"epoch": epoch + 1, "states": hidden_states.copy()}
+            )
 
 total_time = time.time() - start_time
 print(f"\nTotal training time: {total_time:.2f} seconds")
@@ -164,23 +167,25 @@ if num_snapshots == 1:
 axes = axes.flatten()
 
 for idx, record in enumerate(hidden_states_history):
-    epoch = record['epoch']
-    states = record['states']  # (T, H)
+    epoch = record["epoch"]
+    states = record["states"]  # (T, H)
 
     ax = axes[idx]
     # Normalize to [0, 1] range
-    im = ax.imshow(states.T, aspect='auto', cmap='gray', vmin=0, vmax=1, interpolation='nearest')
-    ax.set_title(f'Epoch {epoch}')
-    ax.set_xlabel('Time Step')
-    ax.set_ylabel('Hidden Unit')
+    im = ax.imshow(
+        states.T, aspect="auto", cmap="gray", vmin=0, vmax=1, interpolation="nearest"
+    )
+    ax.set_title(f"Epoch {epoch}")
+    ax.set_xlabel("Time Step")
+    ax.set_ylabel("Hidden Unit")
     plt.colorbar(im, ax=ax)
 
 # Hide unused subplots
 for idx in range(num_snapshots, len(axes)):
-    axes[idx].axis('off')
+    axes[idx].axis("off")
 
 plt.tight_layout()
-plt.suptitle('Hidden State Evolution During Training', fontsize=16, y=1.01)
+plt.suptitle("Hidden State Evolution During Training", fontsize=16, y=1.01)
 plt.show()
 
 # %%
@@ -188,21 +193,21 @@ plt.show()
 plt.figure(figsize=(12, 6))
 
 for idx, record in enumerate(hidden_states_history):
-    epoch = record['epoch']
-    states = record['states']  # (T, H)
+    epoch = record["epoch"]
+    states = record["states"]  # (T, H)
 
     # Calculate variance across hidden units at each timestep
     variance_per_timestep = np.var(states, axis=1)
 
     # Use color gradient based on epoch
-    cmap = plt.cm.get_cmap('viridis')
+    cmap = plt.cm.get_cmap("viridis")
     color = cmap(idx / max(1, len(hidden_states_history) - 1))
-    plt.plot(variance_per_timestep, label=f'Epoch {epoch}', color=color, alpha=0.7)
+    plt.plot(variance_per_timestep, label=f"Epoch {epoch}", color=color, alpha=0.7)
 
-plt.xlabel('Time Step')
-plt.ylabel('Variance across Hidden Units')
-plt.title('Hidden State Variance Evolution')
-plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+plt.xlabel("Time Step")
+plt.ylabel("Variance across Hidden Units")
+plt.title("Hidden State Variance Evolution")
+plt.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
 plt.grid(True)
 plt.tight_layout()
 plt.show()
@@ -212,20 +217,20 @@ plt.show()
 plt.figure(figsize=(12, 6))
 
 for idx, record in enumerate(hidden_states_history):
-    epoch = record['epoch']
-    states = record['states']  # (T, H)
+    epoch = record["epoch"]
+    states = record["states"]  # (T, H)
 
     # Calculate mean absolute value across hidden units at each timestep
     mean_abs_per_timestep = np.mean(np.abs(states), axis=1)
 
-    cmap = plt.cm.get_cmap('viridis')
+    cmap = plt.cm.get_cmap("viridis")
     color = cmap(idx / max(1, len(hidden_states_history) - 1))
-    plt.plot(mean_abs_per_timestep, label=f'Epoch {epoch}', color=color, alpha=0.7)
+    plt.plot(mean_abs_per_timestep, label=f"Epoch {epoch}", color=color, alpha=0.7)
 
-plt.xlabel('Time Step')
-plt.ylabel('Mean Absolute Hidden State Value')
-plt.title('Hidden State Magnitude Evolution')
-plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+plt.xlabel("Time Step")
+plt.ylabel("Mean Absolute Hidden State Value")
+plt.title("Hidden State Magnitude Evolution")
+plt.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
 plt.grid(True)
 plt.tight_layout()
 plt.show()
@@ -253,16 +258,47 @@ with dpl.no_grad():
 test_mse = np.mean((np.array(predictions) - np.array(true_values)) ** 2)
 print(f"Test MSE: {test_mse:.6f}")
 
-# Plot predictions vs true values
-plt.figure(figsize=(12, 6))
-plt.scatter(true_values, predictions, alpha=0.5)
-plt.plot([0, 2], [0, 2], "r--", label="Perfect Prediction")
-plt.xlabel("True Value")
-plt.ylabel("Predicted Value")
-plt.title(f"Adding Problem: Predictions vs True Values (Test MSE: {test_mse:.6f})")
-plt.legend()
-plt.grid(True)
+# Plot predictions vs true values and residuals
+fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+
+# Left plot: Predictions vs True Values
+ax1 = axes[0]
+ax1.scatter(true_values, predictions, alpha=0.5)
+ax1.plot([0, 2], [0, 2], "r--", label="Perfect Prediction")
+ax1.set_xlabel("True Value")
+ax1.set_ylabel("Predicted Value")
+ax1.set_title(f"Predictions vs True Values (Test MSE: {test_mse:.6f})")
+ax1.legend()
+ax1.grid(True)
+
+# Right plot: Residual Distribution
+residuals = np.array(predictions) - np.array(true_values)
+ax2 = axes[1]
+ax2.hist(residuals, bins=30, alpha=0.7, edgecolor='black')
+ax2.axvline(x=0, color='r', linestyle='--', label='Zero Residual')
+ax2.set_xlabel("Residual (Predicted - True)")
+ax2.set_ylabel("Frequency")
+ax2.set_title("Residual Distribution")
+
+# Add statistics to the plot
+mean_residual = np.mean(residuals)
+std_residual = np.std(residuals)
+median_residual = np.median(residuals)
+ax2.axvline(x=mean_residual, color='g', linestyle='-', linewidth=2, label=f'Mean: {mean_residual:.4f}')
+ax2.legend()
+ax2.grid(True, alpha=0.3)
+
+plt.tight_layout()
 plt.show()
+
+# %%
+# Residual statistics
+print("\nResidual Statistics:")
+print(f"Mean: {mean_residual:.6f}")
+print(f"Std Dev: {std_residual:.6f}")
+print(f"Median: {median_residual:.6f}")
+print(f"Min: {np.min(residuals):.6f}")
+print(f"Max: {np.max(residuals):.6f}")
 
 # %%
 # Show some sample predictions
