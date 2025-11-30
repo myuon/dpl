@@ -88,32 +88,15 @@ sample_x_batch = sample_x[np.newaxis, :]  # Add batch dimension
 
 # Storage for hidden states across epochs
 hidden_states_history = []
-epochs_to_record = list(
-    range(0, max_epoch, max(1, max_epoch // 10))
-)  # Record ~10 snapshots
+epochs_to_record = set(
+    list(range(0, max_epoch, max(1, max_epoch // 10))) + [max_epoch - 1]
+)  # Record ~10 snapshots + last epoch
 
-# Create Trainer
-trainer = Trainer(
-    model=model,
-    optimizer=optimizer,
-    loss_fn=F.mean_squared_error,
-    train_loader=train_loader,
-    test_loader=test_loader,
-    max_epoch=max_epoch,
-)
 
-# Custom training loop with hidden state recording
-print(f"Starting training for {max_epoch} epochs...")
-import time
-
-start_time = time.time()
-
-for epoch in range(max_epoch):
-    # Train one epoch
-    trainer.step(epochs=1)
-
-    # Record hidden states at certain epochs
-    if epoch in epochs_to_record or epoch == max_epoch - 1:
+# Define callback to record hidden states
+def record_hidden_states(trainer):
+    """Callback to record hidden states at specific epochs."""
+    if trainer.current_epoch in epochs_to_record:
         model.reset_state()
         with dpl.no_grad():
             x_var = as_variable(sample_x_batch)
@@ -122,12 +105,23 @@ for epoch in range(max_epoch):
             # Extract the hidden states and convert to numpy
             hidden_states = hs.data_required[0]  # (T, H)
             hidden_states_history.append(
-                {"epoch": epoch + 1, "states": hidden_states.copy()}
+                {"epoch": trainer.current_epoch, "states": hidden_states.copy()}
             )
 
-total_time = time.time() - start_time
-print(f"\nTotal training time: {total_time:.2f} seconds")
-print(f"Average time per epoch: {total_time / max_epoch:.2f} seconds")
+
+# Create Trainer with callback
+trainer = Trainer(
+    model=model,
+    optimizer=optimizer,
+    loss_fn=F.mean_squared_error,
+    train_loader=train_loader,
+    test_loader=test_loader,
+    max_epoch=max_epoch,
+    on_epoch_end=record_hidden_states,  # Add callback
+)
+
+# Run training
+trainer.run()
 
 # Get loss history
 loss_history = trainer.train_loss_history
@@ -247,7 +241,6 @@ with dpl.no_grad():
 
         x_var = as_variable(x[np.newaxis, :])  # Add batch dimension
         y_pred = model(x_var)  # (1, 1)
-        print(f"{y_pred.data_required[0][0]} vs {t[0]}")
         predictions.append(float(y_pred.data_required[0][0]))
         true_values.append(float(t[0]))
 

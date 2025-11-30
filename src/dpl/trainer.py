@@ -19,6 +19,9 @@ class Trainer:
         preprocess_fn: Optional[
             Callable[[ndarray, ndarray], tuple[ndarray, ndarray]]
         ] = None,
+        on_epoch_start: Optional[Callable[["Trainer"], None]] = None,
+        on_epoch_end: Optional[Callable[["Trainer"], None]] = None,
+        on_batch_end: Optional[Callable[["Trainer"], None]] = None,
     ):
         self.model = model
         self.optimizer = optimizer
@@ -29,6 +32,11 @@ class Trainer:
         self.max_epoch = max_epoch
         self.preprocess_fn = preprocess_fn
 
+        # Callbacks
+        self.on_epoch_start = on_epoch_start
+        self.on_epoch_end = on_epoch_end
+        self.on_batch_end = on_batch_end
+
         # History tracking
         self.train_loss_history: list[float] = []
         self.test_loss_history: list[float] = []
@@ -38,6 +46,7 @@ class Trainer:
 
         # Current state
         self.current_epoch = 0
+        self.current_batch = 0
         self.total_time = 0.0
 
     def train_epoch(self) -> tuple[float, Optional[float]]:
@@ -80,6 +89,11 @@ class Trainer:
             if self.metric_fn is not None:
                 metric = self.metric_fn(y, t)
                 sum_metric += metric.data_required.astype(float).item() * batch_size
+
+            # Batch callback
+            self.current_batch = batch_count
+            if self.on_batch_end is not None:
+                self.on_batch_end(self)
 
         avg_loss = sum_loss / total_samples
         avg_metric = sum_metric / total_samples if self.metric_fn is not None else None
@@ -133,6 +147,10 @@ class Trainer:
             epochs: Number of epochs to train
         """
         for _ in range(epochs):
+            # Epoch start callback
+            if self.on_epoch_start is not None:
+                self.on_epoch_start(self)
+
             epoch_start = time.time()
 
             # Train
@@ -157,6 +175,10 @@ class Trainer:
 
             # Update state
             self.current_epoch += 1
+
+            # Epoch end callback
+            if self.on_epoch_end is not None:
+                self.on_epoch_end(self)
 
             # Print progress
             self._print_progress(
