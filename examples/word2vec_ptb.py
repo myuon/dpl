@@ -68,8 +68,11 @@ class CBOWDataset(Dataset):
 
 # %%
 # Load PTB dataset
+corpus_size = 1000
+
 print("Loading PTB dataset...")
 corpus, word_to_id, id_to_word = load_data("train")
+corpus = corpus[:corpus_size]
 print(f"Corpus size: {len(corpus)}")  # type: ignore
 print(f"Vocabulary size: {len(word_to_id)}")  # type: ignore
 
@@ -93,8 +96,8 @@ for i in range(min(5, len(target))):
 vocabulary_size = len(word_to_id)  # type: ignore
 hidden_size = 100
 sample_size = 5
-max_epoch = 15
-batch_size = 256
+max_epoch = 100
+batch_size = 128
 
 print("\n" + "=" * 60)
 print("Training Configuration")
@@ -197,6 +200,29 @@ def word2vec_loss_fn(y, t):
     )
 
 
+# Define perplexity metric
+def perplexity_metric_fn(y, t):
+    """
+    Compute perplexity from the model output.
+
+    Perplexity = exp(loss)
+
+    Args:
+        y: Tuple of (target_score, negative_scores) from model
+        t: Target (unused, kept for Trainer interface compatibility)
+
+    Returns:
+        Perplexity value
+    """
+    target_score, negative_scores = y
+    loss = F.negative_sampling_loss(
+        target_score, negative_scores, sample_size=sample_size
+    )
+    # Perplexity = exp(loss)
+    perplexity = F.exp(loss)
+    return perplexity
+
+
 # Train using Trainer
 from dpl.trainer import Trainer
 
@@ -204,6 +230,7 @@ trainer = Trainer(
     model=wrapped_model,
     optimizer=optimizer,
     loss_fn=word2vec_loss_fn,
+    metric_fn=perplexity_metric_fn,  # Add perplexity metric
     train_loader=cbow_loader,
     max_epoch=max_epoch,
     preprocess_fn=preprocess_fn,
@@ -236,10 +263,20 @@ print(f"\nFinal loss: {loss_history[-1]:.4f}")
 
 
 # %%
-# Save the model
-print("\nSaving model weights...")
-model.save_weights("word2vec_ptb.npz")
-print("Model saved to 'word2vec_ptb.npz'")
+# Plot perplexity over epochs
+perplexity_history = trainer.train_metric_history
+
+if len(perplexity_history) > 0:
+    plt.figure(figsize=(12, 6))
+    plt.plot(range(1, max_epoch + 1), perplexity_history, linewidth=2, marker="o", color="green")
+    plt.xlabel("Epoch", fontsize=12)
+    plt.ylabel("Perplexity", fontsize=12)
+    plt.title("CBOW with Negative Sampling - Perplexity (PTB)", fontsize=14)
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+    print(f"\nFinal perplexity: {perplexity_history[-1]:.4f}")
 
 
 # %%
