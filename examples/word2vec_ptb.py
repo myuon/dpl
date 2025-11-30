@@ -248,16 +248,10 @@ loss_history = trainer.train_loss_history
 
 # %%
 # Plot training loss
-import matplotlib.pyplot as plt
-
-plt.figure(figsize=(12, 6))
-plt.plot(range(1, max_epoch + 1), loss_history, linewidth=2, marker="o")
-plt.xlabel("Epoch", fontsize=12)
-plt.ylabel("Loss", fontsize=12)
-plt.title("CBOW with Negative Sampling - Training Loss (PTB)", fontsize=14)
-plt.grid(True, alpha=0.3)
-plt.tight_layout()
-plt.show()
+trainer.plot_history(
+    history_type="loss",
+    title="CBOW with Negative Sampling - Training Loss (PTB)",
+)
 
 print(f"\nFinal loss: {loss_history[-1]:.4f}")
 
@@ -267,14 +261,12 @@ print(f"\nFinal loss: {loss_history[-1]:.4f}")
 perplexity_history = trainer.train_metric_history
 
 if len(perplexity_history) > 0:
-    plt.figure(figsize=(12, 6))
-    plt.plot(range(1, max_epoch + 1), perplexity_history, linewidth=2, marker="o", color="green")
-    plt.xlabel("Epoch", fontsize=12)
-    plt.ylabel("Perplexity", fontsize=12)
-    plt.title("CBOW with Negative Sampling - Perplexity (PTB)", fontsize=14)
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.show()
+    trainer.plot_history(
+        history_type="metric",
+        ylabel="Perplexity",
+        title="CBOW with Negative Sampling - Perplexity (PTB)",
+        color="green",
+    )
 
     print(f"\nFinal perplexity: {perplexity_history[-1]:.4f}")
 

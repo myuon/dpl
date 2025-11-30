@@ -229,3 +229,86 @@ class Trainer:
         total_time = time.time() - start_time
         print(f"\nTotal training time: {total_time:.2f} seconds")
         print(f"Average time per epoch: {total_time / self.max_epoch:.2f} seconds")
+
+    def plot_history(
+        self,
+        history_type: str = "loss",
+        ylabel: Optional[str] = None,
+        title: Optional[str] = None,
+        color: Optional[str] = None,
+        figsize: tuple[int, int] = (12, 6),
+    ) -> None:
+        """
+        Plot training history over epochs.
+
+        Args:
+            history_type: Type of history to plot. One of:
+                - "loss": Plot train_loss_history
+                - "test_loss": Plot test_loss_history
+                - "metric": Plot train_metric_history
+                - "test_metric": Plot test_metric_history
+            ylabel: Label for y-axis (default: auto-generated based on history_type)
+            title: Title of the plot (default: auto-generated based on history_type)
+            color: Line color (default: None, uses matplotlib default)
+            figsize: Figure size tuple (default: (12, 6))
+        """
+        try:
+            import matplotlib.pyplot as plt
+        except ImportError:
+            raise ImportError(
+                "matplotlib is required for plotting. Install it with: pip install matplotlib"
+            )
+
+        # Select history based on type
+        history_map = {
+            "loss": self.train_loss_history,
+            "test_loss": self.test_loss_history,
+            "metric": self.train_metric_history,
+            "test_metric": self.test_metric_history,
+        }
+
+        if history_type not in history_map:
+            raise ValueError(
+                f"Invalid history_type: {history_type}. "
+                f"Must be one of {list(history_map.keys())}"
+            )
+
+        history = history_map[history_type]
+
+        if len(history) == 0:
+            print(f"No {history_type} data to plot.")
+            return
+
+        # Auto-generate ylabel and title if not provided
+        if ylabel is None:
+            ylabel_map = {
+                "loss": "Loss",
+                "test_loss": "Test Loss",
+                "metric": "Metric",
+                "test_metric": "Test Metric",
+            }
+            ylabel = ylabel_map[history_type]
+
+        if title is None:
+            title_map = {
+                "loss": "Training Loss",
+                "test_loss": "Test Loss",
+                "metric": "Training Metric",
+                "test_metric": "Test Metric",
+            }
+            title = title_map[history_type]
+
+        # Plot
+        plt.figure(figsize=figsize)
+        epochs = range(1, len(history) + 1)
+        plot_kwargs = {"linewidth": 2, "marker": "o"}
+        if color:
+            plot_kwargs["color"] = color
+
+        plt.plot(epochs, history, **plot_kwargs)
+        plt.xlabel("Epoch", fontsize=12)
+        plt.ylabel(ylabel, fontsize=12)
+        plt.title(title, fontsize=14)
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.show()
