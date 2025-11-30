@@ -1,8 +1,7 @@
-from typing import Callable, Optional
+from typing import Callable, Optional, Iterable, Any
 import time
 from dpl.core import Variable, as_variable, no_grad, ndarray
-from dpl.dataloaders import DataLoader
-from dpl.layers import Layer
+from dpl.layers import Layer, StatefulLayer
 from dpl.optimizers import Optimizer
 
 
@@ -13,8 +12,8 @@ class Trainer:
         optimizer: Optimizer,
         loss_fn: Callable[[Variable, Variable], Variable],
         metric_fn: Optional[Callable[[Variable, Variable], Variable]] = None,
-        train_loader: Optional[DataLoader] = None,
-        test_loader: Optional[DataLoader] = None,
+        train_loader: Optional[Any] = None,
+        test_loader: Optional[Any] = None,
         max_epoch: int = 10,
         preprocess_fn: Optional[
             Callable[[ndarray, ndarray], tuple[ndarray, ndarray]]
@@ -22,6 +21,7 @@ class Trainer:
         on_epoch_start: Optional[Callable[["Trainer"], None]] = None,
         on_epoch_end: Optional[Callable[["Trainer"], None]] = None,
         on_batch_end: Optional[Callable[["Trainer"], None]] = None,
+        truncate_bptt: bool = False,
     ):
         self.model = model
         self.optimizer = optimizer
@@ -31,6 +31,7 @@ class Trainer:
         self.test_loader = test_loader
         self.max_epoch = max_epoch
         self.preprocess_fn = preprocess_fn
+        self.truncate_bptt = truncate_bptt
 
         # Callbacks
         self.on_epoch_start = on_epoch_start
@@ -77,6 +78,11 @@ class Trainer:
 
             # Backward
             loss.backward()
+
+            # Truncate computational graph if using truncated BPTT
+            if self.truncate_bptt:
+                loss.unchain_backward()
+
             self.optimizer.update()
             self.model.cleargrads()
 

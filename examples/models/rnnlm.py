@@ -7,9 +7,10 @@ This model predicts the next word in a sequence using:
 - Time Affine: Project to vocabulary space
 - Time Softmax with Loss: Compute loss
 """
+
 import numpy as np
 from dpl.core import Variable
-from dpl.layers import Layer
+from dpl.layers import Layer, StatefulLayer
 import dpl.layers as L
 
 
@@ -26,6 +27,7 @@ class RNNLMWithLoss(Layer):
         hidden_size: Size of RNN hidden state
         stateful: If True, maintains state across batches
     """
+
     def __init__(
         self,
         vocab_size: int,
