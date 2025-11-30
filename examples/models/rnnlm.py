@@ -13,20 +13,18 @@ from dpl.layers import Layer
 import dpl.layers as L
 
 
-class RNNLM(Layer):
+class RNNLMWithLoss(Layer):
     """
-    Recurrent Neural Network Language Model.
+    RNNLM with loss computation.
 
     Architecture:
-        Input (word IDs) -> TimeEmbedding -> TimeRNN -> TimeAffine -> Output (scores)
-
-    For training, use with TimeSoftmaxWithLoss to compute the loss.
+        Input (word IDs) -> TimeEmbedding -> TimeRNN -> TimeAffine -> TimeSoftmaxWithLoss -> Loss
 
     Args:
         vocab_size: Size of vocabulary
         embedding_dim: Dimension of word embeddings
         hidden_size: Size of RNN hidden state
-        stateful: If True, maintains state across batches (default: False)
+        stateful: If True, maintains state across batches
     """
     def __init__(
         self,
@@ -47,50 +45,11 @@ class RNNLM(Layer):
             L.TimeRNN(hidden_size, in_size=embedding_dim, stateful=stateful),
             L.TimeAffine(vocab_size, in_size=hidden_size),
         )
-
-    def reset_state(self):
-        """Reset RNN hidden state."""
-        self.model.reset_state()
-
-    def forward(self, *xs: Variable) -> Variable:
-        """
-        Forward pass of RNNLM.
-
-        Args:
-            xs: Tuple containing input word IDs with shape (batch_size, seq_len)
-
-        Returns:
-            Scores with shape (batch_size, seq_len, vocab_size)
-        """
-        return self.model(*xs)
-
-
-class RNNLMWithLoss(Layer):
-    """
-    RNNLM with loss computation.
-
-    This combines RNNLM with TimeSoftmaxWithLoss for training.
-
-    Args:
-        vocab_size: Size of vocabulary
-        embedding_dim: Dimension of word embeddings
-        hidden_size: Size of RNN hidden state
-        stateful: If True, maintains state across batches
-    """
-    def __init__(
-        self,
-        vocab_size: int,
-        embedding_dim: int,
-        hidden_size: int,
-        stateful: bool = False,
-    ):
-        super().__init__()
-        self.rnnlm = RNNLM(vocab_size, embedding_dim, hidden_size, stateful=stateful)
         self.loss_layer = L.TimeSoftmaxWithLoss()
 
     def reset_state(self):
         """Reset RNN hidden state."""
-        self.rnnlm.reset_state()
+        self.model.reset_state()
 
     def forward(self, *xs: Variable) -> Variable:
         """
@@ -106,8 +65,8 @@ class RNNLMWithLoss(Layer):
         """
         inputs, targets = xs
 
-        # Get scores from RNNLM
-        scores = self.rnnlm(inputs)
+        # Get scores from model
+        scores = self.model(inputs)
 
         # Compute loss
         loss = self.loss_layer(scores, targets)
@@ -124,4 +83,4 @@ class RNNLMWithLoss(Layer):
         Returns:
             Scores with shape (batch_size, seq_len, vocab_size)
         """
-        return self.rnnlm(x)
+        return self.model(x)
