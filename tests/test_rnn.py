@@ -203,7 +203,7 @@ class TestRNN:
         # Get the weights and bias from the RNN layer
         # x2h contains W_xh and b_h
         W_xh = rnn.x2h.W.data  # shape: (in_size, hidden_size)
-        b_h = rnn.x2h.b.data   # shape: (hidden_size,)
+        b_h = rnn.x2h.b.data  # shape: (hidden_size,)
         # h2h contains W_hh (no bias)
         W_hh = rnn.h2h.W.data  # shape: (hidden_size, hidden_size)
 
@@ -270,3 +270,176 @@ class TestRNN:
         # All steps should match
         for h_rnn, h_numpy in zip(hs_rnn, hs_numpy):
             assert np.allclose(h_rnn, h_numpy, rtol=1e-5, atol=1e-7)
+
+    def test_rnn_bptt_gradients(self):
+        """Test RNN BPTT gradients against numerical differentiation.
+
+        Test case: 2-step RNN with simple loss
+        h0 = 0
+        h1 = tanh(W_xh @ x1 + W_hh @ h0 + b)
+        h2 = tanh(W_xh @ x2 + W_hh @ h1 + b)
+        loss = sum(h2)
+
+        Verify that gradients computed by backprop match numerical gradients.
+        """
+        np.random.seed(42)
+        hidden_size = 3
+        in_size = 2
+        batch_size = 1  # Use batch_size=1 for simpler numerical diff
+
+        # Create RNN layer
+        rnn = L.RNN(hidden_size=hidden_size, in_size=in_size)
+
+        # Create fixed inputs
+        x1 = np.random.randn(batch_size, in_size)
+        x2 = np.random.randn(batch_size, in_size)
+
+        # Helper function to compute loss given current parameters
+        def compute_loss():
+            rnn.reset_state()
+            h1 = rnn(as_variable(x1))
+            h2 = rnn(as_variable(x2))
+            loss = F.sum(h2)
+            return loss
+
+        # Compute gradients with backprop
+        rnn.cleargrads()
+        loss = compute_loss()
+        loss.backward()
+        loss.unchain_backward()
+
+        # Save backprop gradients
+        grad_W_xh_backprop = rnn.x2h.W.grad.data.copy()
+        grad_b_backprop = rnn.x2h.b.grad.data.copy()
+        grad_W_hh_backprop = rnn.h2h.W.grad.data.copy()
+
+        # Numerical gradient computation
+        eps = 1e-4
+
+        def numerical_gradient(param_array):
+            """Compute numerical gradient for a parameter array."""
+            grad = np.zeros_like(param_array)
+            it = np.nditer(param_array, flags=["multi_index"])
+
+            while not it.finished:
+                idx = it.multi_index
+                original_value = param_array[idx]
+
+                # f(x + h)
+                param_array[idx] = original_value + eps
+                rnn.cleargrads()  # Clear gradients before forward
+                loss_plus = compute_loss()
+                loss_plus_val = float(loss_plus.data)
+
+                # f(x - h)
+                param_array[idx] = original_value - eps
+                rnn.cleargrads()  # Clear gradients before forward
+                loss_minus = compute_loss()
+                loss_minus_val = float(loss_minus.data)
+
+                # Numerical gradient
+                grad[idx] = (loss_plus_val - loss_minus_val) / (2 * eps)
+
+                # Restore original value
+                param_array[idx] = original_value
+
+                it.iternext()
+
+            return grad
+
+        # Compute numerical gradients for each parameter
+        grad_W_xh_numerical = numerical_gradient(rnn.x2h.W.data)
+        grad_b_numerical = numerical_gradient(rnn.x2h.b.data)
+        grad_W_hh_numerical = numerical_gradient(rnn.h2h.W.data)
+
+        # Compare gradients
+        print("\n=== BPTT Gradient Check ===")
+        print(f"W_xh backprop:\n{grad_W_xh_backprop}")
+        print(f"W_xh numerical:\n{grad_W_xh_numerical}")
+        print(
+            f"W_xh gradient difference: {np.max(np.abs(grad_W_xh_backprop - grad_W_xh_numerical))}"
+        )
+        print(f"\nb backprop:\n{grad_b_backprop}")
+        print(f"b numerical:\n{grad_b_numerical}")
+        print(
+            f"b gradient difference: {np.max(np.abs(grad_b_backprop - grad_b_numerical))}"
+        )
+        print(f"\nW_hh backprop:\n{grad_W_hh_backprop}")
+        print(f"W_hh numerical:\n{grad_W_hh_numerical}")
+        print(
+            f"W_hh gradient difference: {np.max(np.abs(grad_W_hh_backprop - grad_W_hh_numerical))}"
+        )
+
+        # Assertions
+        assert np.allclose(
+            grad_W_xh_backprop, grad_W_xh_numerical, rtol=1e-3, atol=1e-5
+        ), "W_xh gradient mismatch"
+        assert np.allclose(
+            grad_b_backprop, grad_b_numerical, rtol=1e-3, atol=1e-5
+        ), "b gradient mismatch"
+        assert np.allclose(
+            grad_W_hh_backprop, grad_W_hh_numerical, rtol=1e-3, atol=1e-5
+        ), "W_hh gradient mismatch"
+
+    def test_rnn_bptt_longer_sequence(self):
+        """Test RNN BPTT with a longer sequence (5 steps)."""
+        np.random.seed(123)
+        hidden_size = 4
+        in_size = 3
+        batch_size = 1
+        num_steps = 5
+
+        # Create RNN layer
+        rnn = L.RNN(hidden_size=hidden_size, in_size=in_size)
+
+        # Create fixed inputs
+        xs = [np.random.randn(batch_size, in_size) for _ in range(num_steps)]
+
+        def compute_loss():
+            rnn.reset_state()
+            for x in xs:
+                h = rnn(as_variable(x))
+            loss = F.sum(h)  # Loss from final hidden state
+            return loss
+
+        # Compute gradients with backprop
+        rnn.cleargrads()
+        loss = compute_loss()
+        loss.backward()
+        loss.unchain_backward()
+
+        # Save backprop gradients
+        grad_W_hh_backprop = rnn.h2h.W.grad.data.copy()
+
+        # Numerical gradient for W_hh (just check one parameter for speed)
+        eps = 1e-4
+
+        def numerical_gradient_single_param(param_array, i, j):
+            """Compute numerical gradient for a single parameter."""
+            original_value = param_array[i, j]
+
+            param_array[i, j] = original_value + eps
+            loss_plus = compute_loss()
+            loss_plus_val = float(loss_plus.data)
+
+            param_array[i, j] = original_value - eps
+            loss_minus = compute_loss()
+            loss_minus_val = float(loss_minus.data)
+
+            grad = (loss_plus_val - loss_minus_val) / (2 * eps)
+
+            param_array[i, j] = original_value
+
+            return grad
+
+        # Check a few random elements of W_hh
+        for _ in range(5):
+            i = np.random.randint(0, hidden_size)
+            j = np.random.randint(0, hidden_size)
+
+            grad_numerical = numerical_gradient_single_param(rnn.h2h.W.data, i, j)
+            grad_backprop = grad_W_hh_backprop[i, j]
+
+            assert np.isclose(
+                grad_backprop, grad_numerical, rtol=1e-3, atol=1e-5
+            ), f"W_hh[{i},{j}] gradient mismatch: {grad_backprop} vs {grad_numerical}"

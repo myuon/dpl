@@ -9,6 +9,7 @@ from dpl.layers.layer import Layer
 from dpl.layers.embedding import Embedding
 from dpl.layers.linear import Linear
 from dpl.layers.rnn import RNN
+from dpl.layers.lstm import LSTM
 import dpl.functions as F
 
 
@@ -89,6 +90,59 @@ class TimeRNN(Layer):
             # Get input at time t: (batch_size, input_dim)
             x_t = x[:, t, :]
             h = self.rnn(x_t)
+            # Reshape to (batch_size, 1, hidden_size) for concatenation
+            h_reshaped = F.reshape(h, (batch_size, 1, -1))
+            hs.append(h_reshaped)
+
+        # Concatenate along sequence dimension
+        # Result: (batch_size, seq_len, hidden_size)
+        out = F.concat(hs, axis=1)
+
+        return out
+
+
+class TimeLSTM(Layer):
+    """
+    Time-distributed LSTM layer.
+
+    Processes a sequence using an LSTM, maintaining hidden and cell state across time steps.
+
+    Args:
+        hidden_size: Size of hidden state
+        in_size: Size of input features (optional, inferred from first input)
+        stateful: If True, maintains state across batches
+    """
+    def __init__(self, hidden_size: int, in_size: int | None = None, stateful: bool = False):
+        super().__init__()
+        self.lstm = LSTM(hidden_size, in_size=in_size)
+        self.stateful = stateful
+
+    def reset_state(self):
+        """Reset the hidden and cell state."""
+        self.lstm.reset_state()
+
+    def forward(self, *xs: Variable) -> Variable:
+        """
+        Args:
+            xs: Tuple containing input with shape (batch_size, seq_len, input_dim)
+
+        Returns:
+            Hidden states at each time step with shape (batch_size, seq_len, hidden_size)
+        """
+        (x,) = xs
+        # x shape: (batch_size, seq_len, input_dim)
+        batch_size = x.shape[0]
+        seq_len = x.shape[1]
+
+        if not self.stateful:
+            self.reset_state()
+
+        # Process each time step and concatenate outputs
+        hs = []
+        for t in range(seq_len):
+            # Get input at time t: (batch_size, input_dim)
+            x_t = x[:, t, :]
+            h = self.lstm(x_t)
             # Reshape to (batch_size, 1, hidden_size) for concatenation
             h_reshaped = F.reshape(h, (batch_size, 1, -1))
             hs.append(h_reshaped)
