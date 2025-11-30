@@ -41,14 +41,19 @@ class RNNLM(Layer):
         self.hidden_size = hidden_size
         self.stateful = stateful
 
-        # Layers
-        self.embed = L.TimeEmbedding(vocab_size, embedding_dim)
-        self.rnn = L.TimeRNN(hidden_size, in_size=embedding_dim, stateful=stateful)
-        self.affine = L.TimeAffine(vocab_size, in_size=hidden_size)
+        # Sequential model
+        self.model = L.Sequential(
+            L.TimeEmbedding(vocab_size, embedding_dim),
+            L.TimeRNN(hidden_size, in_size=embedding_dim, stateful=stateful),
+            L.TimeAffine(vocab_size, in_size=hidden_size),
+        )
 
     def reset_state(self):
         """Reset RNN hidden state."""
-        self.rnn.reset_state()
+        # Reset state for all layers that have reset_state method
+        for layer in self.model.layers:
+            if hasattr(layer, 'reset_state') and callable(getattr(layer, 'reset_state')):
+                getattr(layer, 'reset_state')()
 
     def forward(self, *xs: Variable) -> Variable:
         """
@@ -60,19 +65,7 @@ class RNNLM(Layer):
         Returns:
             Scores with shape (batch_size, seq_len, vocab_size)
         """
-        (x,) = xs
-        # x shape: (batch_size, seq_len)
-
-        # Embedding: (batch_size, seq_len, embedding_dim)
-        h = self.embed(x)
-
-        # RNN: (batch_size, seq_len, hidden_size)
-        h = self.rnn(h)
-
-        # Affine: (batch_size, seq_len, vocab_size)
-        scores = self.affine(h)
-
-        return scores
+        return self.model(*xs)
 
 
 class RNNLMWithLoss(Layer):
