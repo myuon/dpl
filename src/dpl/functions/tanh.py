@@ -1,4 +1,4 @@
-from dpl.core import Variable, UnaryFunction, get_array_module
+from dpl.core import Variable, UnaryFunction, get_array_module, unwrap
 
 
 class Tanh(UnaryFunction):
@@ -10,8 +10,9 @@ class Tanh(UnaryFunction):
 
     def backward(self, *gys: Variable) -> Variable:
         (gy,) = gys
-        (x,) = self.inputs
-        gx = gy * (1 - x**2)
+        (y,) = self.outputs
+        y0 = unwrap(y())
+        gx = gy * (1 - y0 * y0)
         return gx
 
 

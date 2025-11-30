@@ -290,21 +290,39 @@ class TestRNN:
         # Create RNN layer
         rnn = L.RNN(hidden_size=hidden_size, in_size=in_size)
 
+        # Get weight matrices (copy for numerical gradient)
+        W_xh = rnn.x2h.W.data.copy()  # (in_size, hidden_size)
+        b = rnn.x2h.b.data.copy()  # (hidden_size,)
+        W_hh = rnn.h2h.W.data.copy()  # (hidden_size, hidden_size)
+
         # Create fixed inputs
         x1 = np.random.randn(batch_size, in_size)
         x2 = np.random.randn(batch_size, in_size)
 
-        # Helper function to compute loss given current parameters
-        def compute_loss():
-            rnn.reset_state()
-            h1 = rnn(as_variable(x1))
-            h2 = rnn(as_variable(x2))
-            loss = F.sum(h2)
+        # Pure numpy forward computation
+        def compute_loss_numpy(W_xh_arr, W_hh_arr, b_arr):
+            """Compute loss using pure numpy.
+            h0 = 0
+            h1 = tanh(x1 @ W_xh + b)
+            h2 = tanh(x2 @ W_xh + h1 @ W_hh + b)
+            loss = sum(h2)
+            """
+            # Step 1: h0 = 0 (implicit)
+            h1 = np.tanh(x1 @ W_xh_arr + b_arr)
+
+            # Step 2: h2 = tanh(x2 @ W_xh + h1 @ W_hh + b)
+            h2 = np.tanh(x2 @ W_xh_arr + h1 @ W_hh_arr + b_arr)
+
+            # Loss: sum of h2
+            loss = np.sum(h2)
             return loss
 
         # Compute gradients with backprop
         rnn.cleargrads()
-        loss = compute_loss()
+        rnn.reset_state()
+        h1 = rnn(as_variable(x1))
+        h2 = rnn(as_variable(x2))
+        loss = F.sum(h2)
         loss.backward()
         loss.unchain_backward()
 
@@ -316,8 +334,8 @@ class TestRNN:
         # Numerical gradient computation
         eps = 1e-4
 
-        def numerical_gradient(param_array):
-            """Compute numerical gradient for a parameter array."""
+        def numerical_gradient_param(param_array, param_name):
+            """Compute numerical gradient for a parameter using pure numpy."""
             grad = np.zeros_like(param_array)
             it = np.nditer(param_array, flags=["multi_index"])
 
@@ -325,32 +343,42 @@ class TestRNN:
                 idx = it.multi_index
                 original_value = param_array[idx]
 
-                # f(x + h)
-                param_array[idx] = original_value + eps
-                rnn.cleargrads()  # Clear gradients before forward
-                loss_plus = compute_loss()
-                loss_plus_val = float(loss_plus.data)
+                # Create copies for perturbation
+                W_xh_pert = W_xh.copy()
+                W_hh_pert = W_hh.copy()
+                b_pert = b.copy()
+
+                # Perturb the specific parameter
+                if param_name == "W_xh":
+                    W_xh_pert[idx] = original_value + eps
+                elif param_name == "W_hh":
+                    W_hh_pert[idx] = original_value + eps
+                elif param_name == "b":
+                    b_pert[idx] = original_value + eps
+
+                loss_plus = compute_loss_numpy(W_xh_pert, W_hh_pert, b_pert)
 
                 # f(x - h)
-                param_array[idx] = original_value - eps
-                rnn.cleargrads()  # Clear gradients before forward
-                loss_minus = compute_loss()
-                loss_minus_val = float(loss_minus.data)
+                if param_name == "W_xh":
+                    W_xh_pert[idx] = original_value - eps
+                elif param_name == "W_hh":
+                    W_hh_pert[idx] = original_value - eps
+                elif param_name == "b":
+                    b_pert[idx] = original_value - eps
+
+                loss_minus = compute_loss_numpy(W_xh_pert, W_hh_pert, b_pert)
 
                 # Numerical gradient
-                grad[idx] = (loss_plus_val - loss_minus_val) / (2 * eps)
-
-                # Restore original value
-                param_array[idx] = original_value
+                grad[idx] = (loss_plus - loss_minus) / (2 * eps)
 
                 it.iternext()
 
             return grad
 
         # Compute numerical gradients for each parameter
-        grad_W_xh_numerical = numerical_gradient(rnn.x2h.W.data)
-        grad_b_numerical = numerical_gradient(rnn.x2h.b.data)
-        grad_W_hh_numerical = numerical_gradient(rnn.h2h.W.data)
+        grad_W_xh_numerical = numerical_gradient_param(W_xh, "W_xh")
+        grad_b_numerical = numerical_gradient_param(b, "b")
+        grad_W_hh_numerical = numerical_gradient_param(W_hh, "W_hh")
 
         # Compare gradients
         print("\n=== BPTT Gradient Check ===")
