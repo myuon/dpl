@@ -16,7 +16,7 @@ from dpl.dataloaders import SequentialDataLoader
 from dpl.trainer import Trainer
 from dpl.layers import Layer
 from datasets.ptb import load_data
-from models.rnnlm import RNNLMWithLoss
+from models.rnnlm import RNNLMWithLoss, BetterRNNLMWithLoss
 
 
 # %%
@@ -72,9 +72,11 @@ print(" ".join([id_to_word[int(word_id)] for word_id in corpus[:20]]))  # type: 
 vocabulary_size = len(word_to_id)  # type: ignore
 embedding_dim = 100
 hidden_size = 100
-max_epoch = 10
+max_epoch = 100
 batch_size = 20
 bptt_length = 35
+max_grad = 0.25
+lr = 5.0
 
 print("\n" + "=" * 60)
 print("Training Configuration")
@@ -102,14 +104,14 @@ val_loader = SequentialDataLoader(
 )
 
 # Create model
-rnnlm_model = RNNLMWithLoss(
+rnnlm_model = BetterRNNLMWithLoss(
     vocab_size=vocabulary_size,
     embedding_dim=embedding_dim,
     hidden_size=hidden_size,
     stateful=True,  # Maintain state across batches for better context
 )
 
-optimizer = O.Adam().setup(rnnlm_model)
+optimizer = O.SGD(lr=lr).setup(rnnlm_model)
 
 print("Model created successfully!")
 print(
@@ -128,7 +130,7 @@ class RNNLMWrapper(Layer):
     and returns the loss directly.
     """
 
-    def __init__(self, model: RNNLMWithLoss):
+    def __init__(self, model: RNNLMWithLoss | BetterRNNLMWithLoss):
         super().__init__()
         self.model = model
         self._target = None
@@ -192,6 +194,8 @@ trainer = Trainer(
     on_epoch_start=on_epoch_start,
     preprocess_fn=preprocess_fn,
     truncate_bptt=True,  # Use truncated BPTT for memory efficiency
+    clip_grads=True,  # Enable gradient clipping to prevent gradient explosion
+    max_grad=0.25,  # Maximum gradient norm
 )
 
 print("\nStarting training...")

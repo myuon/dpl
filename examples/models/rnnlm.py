@@ -86,3 +86,79 @@ class RNNLMWithLoss(Layer):
             Scores with shape (batch_size, seq_len, vocab_size)
         """
         return self.model(x)
+
+
+class BetterRNNLMWithLoss(Layer):
+    """
+    Better RNNLM with LSTM and loss computation.
+
+    Uses LSTM instead of RNN for better long-term dependency learning.
+
+    Architecture:
+        Input (word IDs) -> TimeEmbedding -> TimeLSTM -> TimeAffine -> TimeSoftmaxWithLoss -> Loss
+
+    Args:
+        vocab_size: Size of vocabulary
+        embedding_dim: Dimension of word embeddings
+        hidden_size: Size of LSTM hidden state
+        stateful: If True, maintains state across batches
+    """
+
+    def __init__(
+        self,
+        vocab_size: int,
+        embedding_dim: int,
+        hidden_size: int,
+        stateful: bool = False,
+    ):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.embedding_dim = embedding_dim
+        self.hidden_size = hidden_size
+        self.stateful = stateful
+
+        # Sequential model with LSTM
+        self.model = L.Sequential(
+            L.TimeEmbedding(vocab_size, embedding_dim),
+            L.TimeLSTM(hidden_size, in_size=embedding_dim, stateful=stateful),
+            L.TimeAffine(vocab_size, in_size=hidden_size),
+        )
+        self.loss_layer = L.TimeSoftmaxWithLoss()
+
+    def reset_state(self):
+        """Reset LSTM hidden and cell state."""
+        self.model.reset_state()
+
+    def forward(self, *xs: Variable) -> Variable:
+        """
+        Forward pass with loss computation.
+
+        Args:
+            xs: Tuple of (inputs, targets)
+                - inputs: shape (batch_size, seq_len)
+                - targets: shape (batch_size, seq_len)
+
+        Returns:
+            Loss value
+        """
+        inputs, targets = xs
+
+        # Get scores from model
+        scores = self.model(inputs)
+
+        # Compute loss
+        loss = self.loss_layer(scores, targets)
+
+        return loss
+
+    def predict(self, x: Variable) -> Variable:
+        """
+        Generate predictions without computing loss.
+
+        Args:
+            x: Input word IDs with shape (batch_size, seq_len)
+
+        Returns:
+            Scores with shape (batch_size, seq_len, vocab_size)
+        """
+        return self.model(x)

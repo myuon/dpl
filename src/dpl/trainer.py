@@ -3,6 +3,7 @@ import time
 from dpl.core import Variable, as_variable, no_grad, ndarray
 from dpl.layers import Layer, StatefulLayer
 from dpl.optimizers import Optimizer
+from dpl import functions as F
 
 
 class Trainer:
@@ -22,6 +23,8 @@ class Trainer:
         on_epoch_end: Optional[Callable[["Trainer"], None]] = None,
         on_batch_end: Optional[Callable[["Trainer"], None]] = None,
         truncate_bptt: bool = False,
+        clip_grads: bool = False,
+        max_grad: float = 1.0,
     ):
         self.model = model
         self.optimizer = optimizer
@@ -32,6 +35,8 @@ class Trainer:
         self.max_epoch = max_epoch
         self.preprocess_fn = preprocess_fn
         self.truncate_bptt = truncate_bptt
+        self.clip_grads = clip_grads
+        self.max_grad = max_grad
 
         # Callbacks
         self.on_epoch_start = on_epoch_start
@@ -49,6 +54,26 @@ class Trainer:
         self.current_epoch = 0
         self.current_batch = 0
         self.total_time = 0.0
+
+    def _clip_gradients(self) -> None:
+        import numpy as np
+
+        """Clip gradients by global norm."""
+        # Calculate global norm
+        total_norm = 0.0
+        for param in self.model.params():
+            if param.grad is not None:
+                param_norm = F.sum(param.grad**2)
+                total_norm += param_norm.data_required
+
+        total_norm = np.sqrt(total_norm)
+
+        # Clip gradients if norm exceeds max_grad
+        if total_norm > self.max_grad:
+            clip_coef = self.max_grad / (total_norm + 1e-6)
+            for param in self.model.params():
+                if param.grad is not None:
+                    param.grad *= clip_coef
 
     def train_epoch(self) -> tuple[float, Optional[float]]:
         """Train for one epoch.
@@ -82,6 +107,10 @@ class Trainer:
             # Truncate computational graph if using truncated BPTT
             if self.truncate_bptt:
                 loss.unchain_backward()
+
+            # Clip gradients if enabled
+            if self.clip_grads:
+                self._clip_gradients()
 
             self.optimizer.update()
             self.model.cleargrads()
@@ -315,9 +344,17 @@ class Trainer:
         if title is None:
             # Generate title based on what's being plotted
             if all("loss" in ht for ht in histories_with_data):
-                title = "Training and Validation Loss" if len(histories_with_data) > 1 else "Training Loss"
+                title = (
+                    "Training and Validation Loss"
+                    if len(histories_with_data) > 1
+                    else "Training Loss"
+                )
             elif all("metric" in ht for ht in histories_with_data):
-                title = "Training and Validation Metric" if len(histories_with_data) > 1 else "Training Metric"
+                title = (
+                    "Training and Validation Metric"
+                    if len(histories_with_data) > 1
+                    else "Training Metric"
+                )
             else:
                 title = "Training History"
 

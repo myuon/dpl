@@ -8,6 +8,7 @@ from dpl.layers.embedding import Embedding
 from dpl.layers.time_layers import (
     TimeEmbedding,
     TimeRNN,
+    TimeLSTM,
     TimeAffine,
     TimeSoftmaxWithLoss,
 )

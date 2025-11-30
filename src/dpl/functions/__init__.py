@@ -8,6 +8,7 @@ from dpl.functions.mean_squared_error import mean_squared_error
 from dpl.functions.broadcast_to import broadcast_to, sum_to
 from dpl.functions.exp import exp
 from dpl.functions.log import log
+from dpl.functions.sqrt import sqrt
 from dpl.functions.linear import linear
 from dpl.functions.sigmoid import sigmoid
 from dpl.functions.softmax import softmax
