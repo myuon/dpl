@@ -204,51 +204,26 @@ print("=" * 60)
 
 # %%
 # Plot training history
-import matplotlib.pyplot as plt
+# Plot loss
+trainer.plot_history(
+    history_types=["loss", "test_loss"],
+    title="RNNLM Training Loss (PTB)",
+    figsize=(12, 6),
+)
 
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
+# Plot perplexity
+trainer.plot_history(
+    history_types=["metric", "test_metric"],
+    ylabel="Perplexity",
+    title="RNNLM Perplexity (PTB)",
+    figsize=(12, 6),
+)
 
-# Loss plot
+# Print final results
 train_loss_history = trainer.train_loss_history
 test_loss_history = trainer.test_loss_history
-
-ax1.plot(
-    range(1, len(train_loss_history) + 1),
-    train_loss_history,
-    linewidth=2,
-    marker="o",
-    label="Train",
-)
-ax1.plot(
-    range(1, len(test_loss_history) + 1),
-    test_loss_history,
-    linewidth=2,
-    marker="s",
-    label="Validation",
-)
-ax1.set_xlabel("Epoch", fontsize=12)
-ax1.set_ylabel("Loss", fontsize=12)
-ax1.set_title("RNNLM Training Loss (PTB)", fontsize=14)
-ax1.legend()
-ax1.grid(True, alpha=0.3)
-
-# Perplexity plot
 train_ppl = trainer.train_metric_history
 val_ppl = trainer.test_metric_history
-ax2.plot(
-    range(1, len(train_ppl) + 1), train_ppl, linewidth=2, marker="o", label="Train"
-)
-ax2.plot(
-    range(1, len(val_ppl) + 1), val_ppl, linewidth=2, marker="s", label="Validation"
-)
-ax2.set_xlabel("Epoch", fontsize=12)
-ax2.set_ylabel("Perplexity", fontsize=12)
-ax2.set_title("RNNLM Perplexity (PTB)", fontsize=14)
-ax2.legend()
-ax2.grid(True, alpha=0.3)
-
-plt.tight_layout()
-plt.show()
 
 print(f"\nFinal train loss: {train_loss_history[-1]:.4f} (PPL: {train_ppl[-1]:.2f})")
 print(f"Final validation loss: {test_loss_history[-1]:.4f} (PPL: {val_ppl[-1]:.2f})")

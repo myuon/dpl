@@ -238,24 +238,22 @@ class Trainer:
 
     def plot_history(
         self,
-        history_type: str = "loss",
+        history_types: str | list[str] = "loss",
         ylabel: Optional[str] = None,
         title: Optional[str] = None,
-        color: Optional[str] = None,
+        colors: Optional[list[str]] = None,
         figsize: tuple[int, int] = (12, 6),
     ) -> None:
         """
         Plot training history over epochs.
 
         Args:
-            history_type: Type of history to plot. One of:
-                - "loss": Plot train_loss_history
-                - "test_loss": Plot test_loss_history
-                - "metric": Plot train_metric_history
-                - "test_metric": Plot test_metric_history
-            ylabel: Label for y-axis (default: auto-generated based on history_type)
-            title: Title of the plot (default: auto-generated based on history_type)
-            color: Line color (default: None, uses matplotlib default)
+            history_types: Type(s) of history to plot. Can be a single string or list of strings.
+                Options: "loss", "test_loss", "metric", "test_metric"
+                Example: ["loss", "test_loss"] to plot both train and test loss
+            ylabel: Label for y-axis (default: auto-generated based on history_types)
+            title: Title of the plot (default: auto-generated based on history_types)
+            colors: List of colors for each history type (default: None, uses matplotlib default)
             figsize: Figure size tuple (default: (12, 6))
         """
         try:
@@ -265,6 +263,10 @@ class Trainer:
                 "matplotlib is required for plotting. Install it with: pip install matplotlib"
             )
 
+        # Convert single string to list for uniform handling
+        if isinstance(history_types, str):
+            history_types = [history_types]
+
         # Select history based on type
         history_map = {
             "loss": self.train_loss_history,
@@ -273,48 +275,77 @@ class Trainer:
             "test_metric": self.test_metric_history,
         }
 
-        if history_type not in history_map:
-            raise ValueError(
-                f"Invalid history_type: {history_type}. "
-                f"Must be one of {list(history_map.keys())}"
-            )
+        # Label map for automatic labeling
+        label_map = {
+            "loss": "Train",
+            "test_loss": "Test",
+            "metric": "Train",
+            "test_metric": "Test",
+        }
 
-        history = history_map[history_type]
+        # Validate all history types
+        for history_type in history_types:
+            if history_type not in history_map:
+                raise ValueError(
+                    f"Invalid history_type: {history_type}. "
+                    f"Must be one of {list(history_map.keys())}"
+                )
 
-        if len(history) == 0:
-            print(f"No {history_type} data to plot.")
+        # Check if any history has data
+        histories_with_data = []
+        for history_type in history_types:
+            history = history_map[history_type]
+            if len(history) > 0:
+                histories_with_data.append(history_type)
+
+        if len(histories_with_data) == 0:
+            print(f"No data to plot for {history_types}.")
             return
 
         # Auto-generate ylabel and title if not provided
         if ylabel is None:
-            ylabel_map = {
-                "loss": "Loss",
-                "test_loss": "Test Loss",
-                "metric": "Metric",
-                "test_metric": "Test Metric",
-            }
-            ylabel = ylabel_map[history_type]
+            # If all types are loss-related, use "Loss", if all are metric-related, use "Metric"
+            if all("loss" in ht for ht in histories_with_data):
+                ylabel = "Loss"
+            elif all("metric" in ht for ht in histories_with_data):
+                ylabel = "Metric"
+            else:
+                ylabel = "Value"
 
         if title is None:
-            title_map = {
-                "loss": "Training Loss",
-                "test_loss": "Test Loss",
-                "metric": "Training Metric",
-                "test_metric": "Test Metric",
-            }
-            title = title_map[history_type]
+            # Generate title based on what's being plotted
+            if all("loss" in ht for ht in histories_with_data):
+                title = "Training and Validation Loss" if len(histories_with_data) > 1 else "Training Loss"
+            elif all("metric" in ht for ht in histories_with_data):
+                title = "Training and Validation Metric" if len(histories_with_data) > 1 else "Training Metric"
+            else:
+                title = "Training History"
+
+        # Default markers for different series
+        default_markers = ["o", "s", "^", "D", "v", "<", ">", "p"]
 
         # Plot
         plt.figure(figsize=figsize)
-        epochs = range(1, len(history) + 1)
-        plot_kwargs = {"linewidth": 2, "marker": "o"}
-        if color:
-            plot_kwargs["color"] = color
 
-        plt.plot(epochs, history, **plot_kwargs)
+        for idx, history_type in enumerate(histories_with_data):
+            history = history_map[history_type]
+            epochs = range(1, len(history) + 1)
+
+            plot_kwargs = {
+                "linewidth": 2,
+                "marker": default_markers[idx % len(default_markers)],
+                "label": label_map[history_type],
+            }
+
+            if colors and idx < len(colors):
+                plot_kwargs["color"] = colors[idx]
+
+            plt.plot(epochs, history, **plot_kwargs)
+
         plt.xlabel("Epoch", fontsize=12)
         plt.ylabel(ylabel, fontsize=12)
         plt.title(title, fontsize=14)
+        plt.legend()
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
         plt.show()
