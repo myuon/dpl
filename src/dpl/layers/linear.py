@@ -11,15 +11,20 @@ class Linear(UnaryLayer):
         no_bias=False,
         dtype=np.float32,
         in_size: int | None = None,
+        W: Parameter | None = None,
     ):
         super().__init__()
         self.in_size = in_size
         self.out_size = out_size
         self.dtype = dtype
 
-        self.W = Parameter(None, name="W")
-        if self.in_size is not None:
-            self._init_W()
+        if W is not None:
+            # Use provided weight parameter
+            self.W = W
+        else:
+            self.W = Parameter(None, name="W")
+            if self.in_size is not None:
+                self._init_W()
 
         if no_bias:
             self.b = None

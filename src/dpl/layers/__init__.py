@@ -5,6 +5,7 @@ from dpl.layers.sequential import Sequential
 from dpl.layers.rnn import RNN
 from dpl.layers.lstm import LSTM
 from dpl.layers.embedding import Embedding
+from dpl.layers.dropout import Dropout
 from dpl.layers.time_layers import (
     TimeEmbedding,
     TimeRNN,

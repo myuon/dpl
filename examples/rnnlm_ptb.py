@@ -70,13 +70,14 @@ print(" ".join([id_to_word[int(word_id)] for word_id in corpus[:20]]))  # type: 
 # %%
 # Hyperparameters
 vocabulary_size = len(word_to_id)  # type: ignore
-embedding_dim = 100
-hidden_size = 100
+embedding_dim = 500
+hidden_size = 500
 max_epoch = 100
 batch_size = 20
 bptt_length = 35
 max_grad = 0.25
-lr = 5.0
+lr = 20.0
+dropout_ratio = 0.5
 
 print("\n" + "=" * 60)
 print("Training Configuration")
@@ -108,6 +109,7 @@ rnnlm_model = BetterRNNLMWithLoss(
     vocab_size=vocabulary_size,
     embedding_dim=embedding_dim,
     hidden_size=hidden_size,
+    dropout_ratio=dropout_ratio,
     stateful=True,  # Maintain state across batches for better context
 )
 
@@ -168,6 +170,10 @@ def preprocess_fn(x, t):
     return x, t
 
 
+# Track best perplexity for learning rate scheduling
+best_ppl = float("inf")
+
+
 # Callback for stateful model
 def on_epoch_start(trainer: Trainer):
     """Reset model state at the start of each epoch."""
@@ -181,6 +187,31 @@ def on_epoch_start(trainer: Trainer):
         trainer.test_loader.reset()
 
 
+def on_epoch_end(trainer: Trainer):
+    """
+    Learning rate scheduling based on validation perplexity.
+
+    If validation perplexity improves (new best achieved),
+    reduce learning rate by factor of 4.
+    """
+    global best_ppl
+
+    # Get current validation perplexity
+    if len(trainer.test_metric_history) > 0:
+        current_ppl = trainer.test_metric_history[-1]
+
+        if current_ppl < best_ppl:
+            # New best perplexity achieved - update and reduce learning rate
+            best_ppl = current_ppl
+            if hasattr(trainer.optimizer, "lr"):
+                old_lr = trainer.optimizer.lr  # type: ignore
+                new_lr = old_lr / 1.5
+                trainer.optimizer.lr = new_lr  # type: ignore
+                print(
+                    f"  | New best ppl: {best_ppl:.2f}, lr reduced: {old_lr:.6f} -> {new_lr:.6f}"
+                )
+
+
 # %%
 # Train using Trainer
 trainer = Trainer(
@@ -192,6 +223,7 @@ trainer = Trainer(
     test_loader=val_loader,
     max_epoch=max_epoch,
     on_epoch_start=on_epoch_start,
+    on_epoch_end=on_epoch_end,  # Add learning rate scheduling
     preprocess_fn=preprocess_fn,
     truncate_bptt=True,  # Use truncated BPTT for memory efficiency
     clip_grads=True,  # Enable gradient clipping to prevent gradient explosion

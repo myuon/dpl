@@ -164,10 +164,11 @@ class TimeAffine(Layer):
         out_size: Output dimension
         in_size: Input dimension (optional, inferred from first input)
         no_bias: If True, no bias term
+        W: Optional pre-initialized weight parameter
     """
-    def __init__(self, out_size: int, in_size: int | None = None, no_bias: bool = False):
+    def __init__(self, out_size: int, in_size: int | None = None, no_bias: bool = False, W=None):
         super().__init__()
-        self.linear = Linear(out_size, in_size=in_size, no_bias=no_bias)
+        self.linear = Linear(out_size, in_size=in_size, no_bias=no_bias, W=W)
 
     def forward(self, *xs: Variable) -> Variable:
         """
