@@ -230,7 +230,6 @@ class Seq2Seq(Layer):
                 embedded = self.decoder.embed(current_input)
 
                 if self.peeky:
-                    assert self.decoder is PeekyDecoder
                     # Peeky: concat encoder_h to embedding
                     encoder_h = self.decoder._encoder_h
                     lstm_in = F.concat([embedded[:, 0, :], encoder_h], axis=1)
@@ -492,17 +491,17 @@ with dpl.no_grad():
 # Interactive testing
 def test_addition(a: int, b: int):
     """Test the model with custom numbers."""
-    input_str = f"{a}+{b}".rjust(train_set.input_len)
-    input_ids = datasets.AddExpr.encode(input_str)
+    input_ids = train_set.make_input(a, b)
+    expected_ids = train_set.make_output(a + b)
 
     with dpl.no_grad():
         x_var = as_variable(input_ids.reshape(1, -1))
         generated = model.generate(x_var, start_id, train_set.output_len)
         pred_str = datasets.AddExpr.decode(generated[0])
 
-    expected = str(a + b).rjust(train_set.output_len)
-    status = "✓" if pred_str == expected else "✗"
-    print(f"{status} {a} + {b} = {pred_str.strip()} (expected: {expected.strip()})")
+    expected_str = datasets.AddExpr.decode(expected_ids)
+    status = "✓" if pred_str == expected_str else "✗"
+    print(f"{status} {a} + {b} = {pred_str.strip()} (expected: {expected_str.strip()})")
 
 
 print("\n" + "=" * 60)

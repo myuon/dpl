@@ -51,6 +51,48 @@ class AddExpr(Dataset):
         self.output_len = max_digits + 1
         super().__init__(train=train)
 
+    def make_input(self, a: int, b: int) -> np.ndarray:
+        """
+        Create input sequence from two numbers.
+
+        Args:
+            a: First operand
+            b: Second operand
+
+        Returns:
+            Input IDs as numpy array (input_len,)
+        """
+        input_str = f"{a}+{b}"
+        input_str = input_str.rjust(self.input_len)
+
+        input_ids = np.array(
+            [self.CHAR2ID[c] for c in input_str], dtype=np.int32
+        )
+
+        if self.reverse_input:
+            input_ids = input_ids[::-1].copy()
+
+        return input_ids
+
+    def make_output(self, result: int) -> np.ndarray:
+        """
+        Create output sequence from a number.
+
+        Args:
+            result: The result number
+
+        Returns:
+            Output IDs as numpy array (output_len,)
+        """
+        output_str = str(result)
+        output_str = output_str.rjust(self.output_len)
+
+        output_ids = np.array(
+            [self.CHAR2ID[c] for c in output_str], dtype=np.int32
+        )
+
+        return output_ids
+
     def prepare(self):
         if self.seed is not None:
             np.random.seed(self.seed if self.train else self.seed + 1)
@@ -65,26 +107,8 @@ class AddExpr(Dataset):
             b = np.random.randint(0, max_val + 1)
             result = a + b
 
-            # Create input string (padded to fixed length)
-            # Format: right-aligned with padding
-            input_str = f"{a}+{b}"
-            input_str = input_str.rjust(self.input_len)
-
-            # Create output string (padded to fixed length)
-            output_str = str(result)
-            output_str = output_str.rjust(self.output_len)
-
-            # Convert to IDs
-            input_ids = np.array(
-                [self.CHAR2ID[c] for c in input_str], dtype=np.int32
-            )
-            output_ids = np.array(
-                [self.CHAR2ID[c] for c in output_str], dtype=np.int32
-            )
-
-            # Reverse input if requested
-            if self.reverse_input:
-                input_ids = input_ids[::-1].copy()
+            input_ids = self.make_input(a, b)
+            output_ids = self.make_output(result)
 
             self.data.append(input_ids)
             self.label.append(output_ids)
