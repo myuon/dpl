@@ -12,4 +12,5 @@ from dpl.layers.time_layers import (
     TimeLSTM,
     TimeAffine,
     TimeSoftmaxWithLoss,
+    TimeAttention,
 )

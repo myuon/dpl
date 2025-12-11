@@ -43,13 +43,21 @@ class Mul(Function):
 
     def forward(self, *xs: ndarray) -> ndarray:
         x0, x1 = xs
+        self.x0_shape, self.x1_shape = x0.shape, x1.shape
         y = x0 * x1
         return y
 
     def backward(self, *gys: Variable) -> tuple[Variable, Variable]:
+        from dpl.functions.broadcast_to import sum_to
+
         (gy,) = gys
         x0, x1 = self.inputs
-        return gy * x1, gy * x0
+        gx0 = gy * x1
+        gx1 = gy * x0
+        if self.x0_shape != self.x1_shape:
+            gx0 = sum_to(gx0, self.x0_shape)
+            gx1 = sum_to(gx1, self.x1_shape)
+        return gx0, gx1
 
 
 def mul(

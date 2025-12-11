@@ -241,3 +241,48 @@ class TimeSoftmaxWithLoss(Layer):
         self.t = targets
 
         return loss
+
+
+class TimeAttention(Layer):
+    """
+    Time-distributed Attention layer.
+
+    Applies attention at each decoder time step over encoder hidden states.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.attention_weights = None
+
+    def forward(self, *xs: Variable) -> Variable:
+        """
+        Args:
+            xs: Tuple of (hs_enc, hs_dec)
+                - hs_enc: Encoder hidden states (batch_size, enc_seq_len, hidden_size)
+                - hs_dec: Decoder hidden states (batch_size, dec_seq_len, hidden_size)
+
+        Returns:
+            Context vectors at each decoder time step (batch_size, dec_seq_len, hidden_size)
+        """
+        hs_enc, hs_dec = xs
+        batch_size = hs_dec.shape[0]
+        dec_seq_len = hs_dec.shape[1]
+
+        cs = []
+        self.attention_weights = []
+
+        for t in range(dec_seq_len):
+            # Get decoder hidden state at time t: (batch_size, hidden_size)
+            h_dec_t = hs_dec[:, t, :]
+            # Compute attention: c (batch_size, hidden_size), a (batch_size, enc_seq_len)
+            c, a = F.attention(hs_enc, h_dec_t)
+            # Reshape for concatenation: (batch_size, 1, hidden_size)
+            c_reshaped = F.reshape(c, (batch_size, 1, -1))
+            cs.append(c_reshaped)
+            self.attention_weights.append(a)
+
+        # Concatenate along sequence dimension
+        # Result: (batch_size, dec_seq_len, hidden_size)
+        out = F.concat(cs, axis=1)
+
+        return out

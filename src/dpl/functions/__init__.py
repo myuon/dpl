@@ -23,3 +23,6 @@ from dpl.functions.tanh import tanh
 from dpl.functions.embed import embed
 from dpl.functions.negative_sampling import negative_sampling_loss
 from dpl.functions.concat import concat
+from dpl.functions.weight_sum import weight_sum
+from dpl.functions.attention_weight import attention_weight
+from dpl.functions.attention import attention
