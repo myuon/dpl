@@ -254,124 +254,112 @@ print(f"Model parameters: {sum(p.data.size for p in model.params() if p.data is 
 
 
 # %%
-# Custom training loop for Seq2Seq
-# (Trainer expects model(x) -> y, but Seq2Seq needs (input, decoder_input, target))
-def train_epoch(model, optimizer, train_loader, pad_id, start_id):
-    """Train for one epoch."""
-    total_loss = 0.0
-    batch_count = 0
+# Wrapper to adapt Seq2SeqWithLoss for Trainer
+class Seq2SeqWrapper(Layer):
+    """
+    Wrapper to adapt Seq2SeqWithLoss for Trainer.
 
-    for x_batch, t_batch in train_loader:
-        # x_batch: (batch_size, input_len) - encoder input
-        # t_batch: (batch_size, output_len) - target output
+    Trainer expects model(x) -> y, but Seq2Seq needs (input, decoder_input, target).
+    This wrapper stores decoder_input and target via preprocess_fn.
+    """
 
-        # Create decoder input: prepend start token, remove last token
-        batch_size = x_batch.shape[0]
-        start_tokens = np.full((batch_size, 1), start_id, dtype=np.int32)
-        decoder_input = np.concatenate([start_tokens, t_batch[:, :-1]], axis=1)
+    def __init__(self, model: Seq2SeqWithLoss, start_id: int, output_len: int):
+        super().__init__()
+        self.model = model
+        self.start_id = start_id
+        self.output_len = output_len
+        self._input = None
+        self._decoder_input = None
+        self._target = None
+        self._target_np = None  # numpy array for accuracy calculation
 
-        # Convert to Variables
-        x = as_variable(x_batch)
-        dec_in = as_variable(decoder_input)
-        t = as_variable(t_batch)
+    def forward(self, *xs: Variable) -> Variable:
+        (x,) = xs
+        if self._decoder_input is None or self._target is None:
+            raise ValueError("decoder_input and target must be set before forward")
+        self._input = x
+        return self.model(x, self._decoder_input, self._target)
 
-        # Forward
-        loss = model(x, dec_in, t)
+    def set_inputs(self, decoder_input, target, target_np):
+        """Store decoder_input and target for next forward pass."""
+        self._decoder_input = decoder_input
+        self._target = target
+        self._target_np = target_np
 
-        # Backward
-        model.cleargrads()
-        loss.backward()
-        optimizer.update()
+    def generate(self, input_seq, start_id, max_len):
+        """Generate output sequence."""
+        return self.model.generate(input_seq, start_id, max_len)
 
-        total_loss += loss.data_required.astype(float).item()
-        batch_count += 1
+    def compute_accuracy(self) -> float:
+        """Compute sequence-level accuracy using the stored input and target."""
+        if self._input is None or self._target_np is None:
+            return 0.0
+        generated = self.model.generate(self._input, self.start_id, self.output_len)
+        correct = np.sum(np.all(generated == self._target_np, axis=1))
+        return correct / len(self._target_np)
 
-    return total_loss / batch_count
+
+# Wrap the model
+start_id = datasets.AddExpr.START_ID
+output_len = train_set.output_len
+wrapped_model = Seq2SeqWrapper(model, start_id, output_len)
+optimizer = O.Adam(lr=lr).setup(wrapped_model)
 
 
-def evaluate(model, test_loader, pad_id, start_id):
-    """Evaluate model on test set."""
-    total_loss = 0.0
-    correct = 0
-    total = 0
-    batch_count = 0
+def preprocess_fn(x, t):
+    """Create decoder input and store in wrapper."""
+    batch_size = x.shape[0]
+    start_tokens = np.full((batch_size, 1), start_id, dtype=np.int32)
+    decoder_input = np.concatenate([start_tokens, t[:, :-1]], axis=1)
 
-    with dpl.no_grad():
-        for x_batch, t_batch in test_loader:
-            batch_size = x_batch.shape[0]
-            start_tokens = np.full((batch_size, 1), start_id, dtype=np.int32)
-            decoder_input = np.concatenate([start_tokens, t_batch[:, :-1]], axis=1)
+    wrapped_model.set_inputs(as_variable(decoder_input), as_variable(t), t)
+    return x, t
 
-            x = as_variable(x_batch)
-            dec_in = as_variable(decoder_input)
-            t = as_variable(t_batch)
 
-            # Loss
-            loss = model(x, dec_in, t)
-            total_loss += loss.data_required.astype(float).item()
-            batch_count += 1
-
-            # Accuracy (sequence-level)
-            generated = model.generate(x, start_id, t_batch.shape[1])
-            correct += np.sum(np.all(generated == t_batch, axis=1))
-            total += batch_size
-
-    return total_loss / batch_count, correct / total
+def accuracy_fn(_y, _t) -> Variable:
+    """Compute accuracy using wrapped_model's stored state."""
+    acc = wrapped_model.compute_accuracy()
+    return as_variable(np.array(acc))
 
 
 # %%
-# Training
-print("Starting training...")
-print("-" * 60)
+# Create Trainer
+trainer = Trainer(
+    model=wrapped_model,
+    optimizer=optimizer,
+    loss_fn=lambda y, _t: y,  # y is already the loss from Seq2SeqWithLoss
+    metric_fn=accuracy_fn,
+    train_loader=train_loader,
+    test_loader=test_loader,
+    max_epoch=max_epoch,
+    preprocess_fn=preprocess_fn,
+)
 
-pad_id = datasets.AddExpr.PAD_ID
-start_id = datasets.AddExpr.START_ID
+print("\nStarting training...")
+trainer.run()
 
-train_loss_history = []
-test_loss_history = []
-test_acc_history = []
 
-for epoch in range(max_epoch):
-    train_loss = train_epoch(model, optimizer, train_loader, pad_id, start_id)
-    test_loss, test_acc = evaluate(model, test_loader, pad_id, start_id)
-
-    train_loss_history.append(train_loss)
-    test_loss_history.append(test_loss)
-    test_acc_history.append(test_acc)
-
-    print(
-        f"Epoch {epoch + 1}/{max_epoch}, "
-        f"train_loss: {train_loss:.4f}, "
-        f"test_loss: {test_loss:.4f}, "
-        f"test_acc: {test_acc:.4f}"
-    )
+# %%
+# Save model weights
+print("\nSaving model weights...")
+model.save_weights("add_expr_seq2seq.npz")
+print("Model saved to 'add_expr_seq2seq.npz'")
 
 
 # %%
 # Plot training history
-import matplotlib.pyplot as plt
+trainer.plot_history(
+    history_types=["loss", "test_loss"],
+    title="Seq2Seq Training Loss (Addition)",
+    figsize=(12, 6),
+)
 
-fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-
-# Loss plot
-axes[0].plot(train_loss_history, label="Train", marker="o")
-axes[0].plot(test_loss_history, label="Test", marker="s")
-axes[0].set_xlabel("Epoch")
-axes[0].set_ylabel("Loss")
-axes[0].set_title("Seq2Seq Training Loss")
-axes[0].legend()
-axes[0].grid(True, alpha=0.3)
-
-# Accuracy plot
-axes[1].plot(test_acc_history, label="Test Accuracy", marker="o", color="green")
-axes[1].set_xlabel("Epoch")
-axes[1].set_ylabel("Accuracy")
-axes[1].set_title("Seq2Seq Test Accuracy")
-axes[1].legend()
-axes[1].grid(True, alpha=0.3)
-
-plt.tight_layout()
-plt.show()
+trainer.plot_history(
+    history_types=["metric", "test_metric"],
+    ylabel="Accuracy",
+    title="Seq2Seq Accuracy (Addition)",
+    figsize=(12, 6),
+)
 
 
 # %%
