@@ -51,12 +51,42 @@ class AttentionDecoder(Layer):
     def __init__(self, vocab_size: int, embedding_dim: int, hidden_size: int):
         super().__init__()
         self.hidden_size = hidden_size
-        self.embed = L.TimeEmbedding(vocab_size, embedding_dim)
-        self.lstm = L.TimeLSTM(hidden_size, in_size=embedding_dim, stateful=True)
-        self.attention = L.TimeAttention()
-        # Affine input: lstm_output + context_vector
-        self.affine = L.TimeAffine(vocab_size, in_size=hidden_size * 2)
+        self.embed = L.Embedding(vocab_size, embedding_dim)
+        self.lstm = L.LSTM(hidden_size, in_size=embedding_dim)
+        self.affine = L.Linear(vocab_size, in_size=hidden_size * 2)
         self._encoder_hs = None
+        self._last_attention_weights: list[Variable] = []
+
+    def step(self, token: Variable) -> tuple[Variable, Variable]:
+        """
+        Process a single timestep.
+
+        Args:
+            token: Input token (batch_size,)
+
+        Returns:
+            scores: Output scores (batch_size, vocab_size)
+            attention_weights: Attention weights (batch_size, seq_len)
+        """
+        if self._encoder_hs is None:
+            raise ValueError("encoder_hs must be set before step")
+
+        # Embed token
+        embedded = self.embed(token)  # (batch_size, embedding_dim)
+
+        # LSTM step
+        h = self.lstm(embedded)  # (batch_size, hidden_size)
+
+        # Attention
+        context, a = F.attention(
+            self._encoder_hs, h
+        )  # (batch_size, hidden_size), (batch_size, seq_len)
+
+        # Concatenate and project
+        concat = F.concat([h, context], axis=1)  # (batch_size, hidden_size * 2)
+        scores = self.affine(concat)  # (batch_size, vocab_size)
+
+        return scores, a
 
     def forward(self, *xs: Variable) -> Variable:
         """
@@ -67,26 +97,30 @@ class AttentionDecoder(Layer):
             Output scores (batch_size, seq_len, vocab_size)
         """
         (x,) = xs
+        batch_size, seq_len = x.shape
 
-        if self._encoder_hs is None:
-            raise ValueError("encoder_hs must be set before forward")
+        all_scores = []
+        self._last_attention_weights = []
+        for t in range(seq_len):
+            token = x[:, t]  # (batch_size,)
+            scores, a = self.step(token)  # (batch_size, vocab_size)
+            # Reshape for concat: (batch_size, vocab_size) -> (batch_size, 1, vocab_size)
+            scores_3d = F.reshape(scores, (batch_size, 1, scores.shape[1]))
+            all_scores.append(scores_3d)
+            self._last_attention_weights.append(a)
 
-        embedded = self.embed(x)
-        hs_dec = self.lstm(embedded)
+        # Concat along time axis: (batch_size, seq_len, vocab_size)
+        return F.concat(all_scores, axis=1)
 
-        # Compute attention context vectors
-        cs = self.attention(self._encoder_hs, hs_dec)
-
-        # Concatenate LSTM output with context vectors
-        concat = F.concat([hs_dec, cs], axis=2)
-        scores = self.affine(concat)
-
-        return scores
+    @property
+    def attention_weights(self) -> list[Variable]:
+        """Get attention weights from last forward pass."""
+        return self._last_attention_weights
 
     def set_state(self, h, c, encoder_hs):
         """Set initial LSTM state and encoder hidden states."""
-        self.lstm.lstm.h = h
-        self.lstm.lstm.c = c
+        self.lstm.h = h
+        self.lstm.c = c
         self._encoder_hs = encoder_hs
 
     def reset_state(self):
@@ -131,7 +165,9 @@ class AttentionSeq2Seq(Layer):
 
         return scores
 
-    def generate(self, input_seq: Variable, start_id: int, max_len: int) -> np.ndarray:
+    def generate(
+        self, input_seq: Variable, start_id: int, max_len: int, debug: bool = False
+    ) -> np.ndarray:
         """
         Generate output sequence (inference mode).
 
@@ -139,6 +175,7 @@ class AttentionSeq2Seq(Layer):
             input_seq: Input sequence (batch_size, input_len)
             start_id: Start token ID
             max_len: Maximum output length
+            debug: If True, print debug info
 
         Returns:
             Generated sequence (batch_size, max_len)
@@ -152,33 +189,31 @@ class AttentionSeq2Seq(Layer):
 
         # Generate one token at a time
         generated = []
-        current_input = as_variable(np.full((batch_size, 1), start_id, dtype=np.int32))
+        current_token = as_variable(np.full((batch_size,), start_id, dtype=np.int32))
 
         with dpl.no_grad():
-            for _ in range(max_len):
-                # Embed current input
-                embedded = self.decoder.embed(current_input)
+            for t in range(max_len):
+                # Use decoder.step() - same as training
+                scores, _a = self.decoder.step(current_token)
 
-                # LSTM step
-                h = self.decoder.lstm.lstm(embedded[:, 0, :])
-
-                # Attention: compute context vector
-                c, _a = F.attention(hs_enc, h)
-
-                # Concatenate LSTM output with context
-                concat = F.concat([h, c], axis=1)
-
-                # Get scores
-                scores = self.decoder.affine.linear(concat)
+                # Softmax for debug
+                if debug and t < 3:
+                    probs = F.softmax(scores, axis=1).data_required[0]
+                    top5_idx = np.argsort(probs)[-5:][::-1]
+                    print(
+                        f"  Step {t}: input={current_token.data_required[0]}, top5 probs:"
+                    )
+                    for idx in top5_idx:
+                        print(
+                            f"    '{datasets.DateFormat.ID2CHAR[idx]}' (id={idx}): {probs[idx]:.4f}"
+                        )
 
                 # Greedy decoding
                 next_token = np.argmax(scores.data_required, axis=1)
                 generated.append(next_token)
 
                 # Prepare next input
-                current_input = as_variable(
-                    next_token.reshape(batch_size, 1).astype(np.int32)
-                )
+                current_token = as_variable(next_token.astype(np.int32))
 
         return np.stack(generated, axis=1)
 
@@ -209,14 +244,16 @@ class AttentionSeq2SeqWithLoss(Layer):
         loss = self.loss_layer(scores, target)
         return loss
 
-    def generate(self, input_seq: Variable, start_id: int, max_len: int) -> np.ndarray:
+    def generate(
+        self, input_seq: Variable, start_id: int, max_len: int, debug: bool = False
+    ) -> np.ndarray:
         """Generate output sequence."""
-        return self.seq2seq.generate(input_seq, start_id, max_len)
+        return self.seq2seq.generate(input_seq, start_id, max_len, debug=debug)
 
     @property
-    def attention_weights(self):
+    def attention_weights(self) -> list[Variable]:
         """Get attention weights from last forward pass."""
-        return self.seq2seq.decoder.attention.attention_weights
+        return self.seq2seq.decoder.attention_weights
 
 
 # %%
@@ -244,10 +281,10 @@ print(f"Output length: {train_set.output_len}")
 
 # Show examples
 print("\nExamples:")
-for i in range(7):
+for i in range(min(3, len(train_set))):
     x, t = train_set[i]
     print(
-        f"  Input: '{datasets.DateFormat.decode(x)}' -> Target: '{datasets.DateFormat.decode(t)}'"
+        f"  Input: '{datasets.DateFormat.decode(x[::-1])}' -> Target: '{datasets.DateFormat.decode(t)}'"
     )
 
 
@@ -342,7 +379,6 @@ def preprocess_fn(x, t):
     batch_size = x.shape[0]
     start_tokens = np.full((batch_size, 1), start_id, dtype=np.int32)
     decoder_input = np.concatenate([start_tokens, t[:, :-1]], axis=1)
-
     wrapped_model.set_inputs(as_variable(decoder_input), as_variable(t), t)
     return x, t
 
@@ -400,7 +436,7 @@ print("Test Examples")
 print("=" * 60)
 
 with dpl.no_grad():
-    for i in range(14):
+    for i in range(min(10, len(test_set))):
         x, t = test_set[i]
         x_var = as_variable(x.reshape(1, -1))
 
@@ -430,26 +466,20 @@ def visualize_attention(model, x, t, ax=None):
     model.seq2seq.decoder.set_state(h, c, hs_enc)
 
     # Generate and collect attention weights
-    batch_size = 1
     generated = []
     attention_weights = []
-    current_input = as_variable(np.full((batch_size, 1), start_id, dtype=np.int32))
+    current_token = as_variable(np.full((1,), start_id, dtype=np.int32))
 
     with dpl.no_grad():
         for _ in range(len(t)):
-            embedded = model.seq2seq.decoder.embed(current_input)
-            h = model.seq2seq.decoder.lstm.lstm(embedded[:, 0, :])
-            context, a = F.attention(hs_enc, h)
+            # Use decoder.step() - same as training and generate
+            scores, a = model.seq2seq.decoder.step(current_token)
             attention_weights.append(a.data_required[0])
 
-            concat = F.concat([h, context], axis=1)
-            scores = model.seq2seq.decoder.affine.linear(concat)
             next_token = np.argmax(scores.data_required, axis=1)
             generated.append(next_token[0])
 
-            current_input = as_variable(
-                next_token.reshape(batch_size, 1).astype(np.int32)
-            )
+            current_token = as_variable(next_token.astype(np.int32))
 
     # Stack attention weights: (output_len, input_len)
     attention_matrix = np.stack(attention_weights, axis=0)
@@ -461,7 +491,8 @@ def visualize_attention(model, x, t, ax=None):
     if ax is None:
         fig, ax = plt.subplots(figsize=(12, 6))
 
-    im = ax.imshow(attention_matrix, cmap="Blues", aspect="auto")
+    im = ax.imshow(attention_matrix, cmap="Blues", aspect="auto", vmin=0.0, vmax=1.0)
+    plt.colorbar(im, ax=ax)
 
     ax.set_xticks(range(len(input_chars)))
     ax.set_xticklabels(input_chars, fontsize=8)
