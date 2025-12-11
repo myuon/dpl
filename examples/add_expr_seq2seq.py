@@ -201,8 +201,12 @@ class Seq2SeqWithLoss(Layer):
 # %%
 # Load dataset
 print("Loading AddExpr dataset...")
-train_set = datasets.AddExpr(num_samples=50000, max_digits=3, train=True, seed=42)
-test_set = datasets.AddExpr(num_samples=1000, max_digits=3, train=False, seed=42)
+train_set = datasets.AddExpr(
+    num_samples=50000, max_digits=3, train=True, seed=42, reverse_input=True
+)
+test_set = datasets.AddExpr(
+    num_samples=1000, max_digits=3, train=False, seed=42, reverse_input=True
+)
 
 print(f"Training samples: {len(train_set)}")
 print(f"Test samples: {len(test_set)}")

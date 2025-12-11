@@ -31,6 +31,7 @@ class AddExpr(Dataset):
         max_digits: int = 3,
         train: bool = True,
         seed: int | None = None,
+        reverse_input: bool = False,
     ):
         """
         Args:
@@ -38,10 +39,12 @@ class AddExpr(Dataset):
             max_digits: Maximum number of digits for each operand
             train: Whether this is training set
             seed: Random seed for reproducibility
+            reverse_input: If True, reverse the input sequence (improves seq2seq learning)
         """
         self.num_samples = num_samples
         self.max_digits = max_digits
         self.seed = seed
+        self.reverse_input = reverse_input
         # Input length: max_digits + 1 ('+') + max_digits = 2 * max_digits + 1
         self.input_len = 2 * max_digits + 1
         # Output length: max_digits + 1 (for possible carry)
@@ -78,6 +81,10 @@ class AddExpr(Dataset):
             output_ids = np.array(
                 [self.CHAR2ID[c] for c in output_str], dtype=np.int32
             )
+
+            # Reverse input if requested
+            if self.reverse_input:
+                input_ids = input_ids[::-1].copy()
 
             self.data.append(input_ids)
             self.label.append(output_ids)
