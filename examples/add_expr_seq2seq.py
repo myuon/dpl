@@ -88,15 +88,93 @@ class Decoder(Layer):
         self.lstm.reset_state()
 
 
+class PeekyDecoder(Layer):
+    """
+    Peeky Decoder for Seq2Seq model.
+
+    Concatenates encoder's hidden state to each time step's input for both
+    LSTM and Affine layers. This allows the decoder to "peek" at the encoder's
+    final state at every step.
+    """
+
+    def __init__(self, vocab_size: int, embedding_dim: int, hidden_size: int):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.embed = L.TimeEmbedding(vocab_size, embedding_dim)
+        # LSTM input: embedding + encoder_h
+        self.lstm = L.TimeLSTM(
+            hidden_size, in_size=embedding_dim + hidden_size, stateful=True
+        )
+        # Affine input: lstm_output + encoder_h
+        self.affine = L.TimeAffine(vocab_size, in_size=hidden_size + hidden_size)
+        self._encoder_h = None
+
+    def forward(self, *xs: Variable) -> Variable:
+        """
+        Args:
+            xs: Target sequence for teacher forcing (batch_size, seq_len)
+
+        Returns:
+            Output scores (batch_size, seq_len, vocab_size)
+        """
+        (x,) = xs
+        batch_size, seq_len = x.shape[0], x.shape[1]
+
+        if self._encoder_h is None:
+            raise ValueError("encoder_h must be set before forward")
+
+        # x: (batch_size, seq_len)
+        embedded = self.embed(x)  # (batch_size, seq_len, embedding_dim)
+
+        # Repeat encoder_h for each time step
+        # encoder_h: (batch_size, hidden_size) -> (batch_size, seq_len, hidden_size)
+        encoder_h_repeated = F.broadcast_to(
+            F.reshape(self._encoder_h, (batch_size, 1, self.hidden_size)),
+            (batch_size, seq_len, self.hidden_size),
+        )
+
+        # Concat embedding with encoder_h for LSTM input
+        lstm_input = F.concat([embedded, encoder_h_repeated], axis=2)
+        hs = self.lstm(lstm_input)  # (batch_size, seq_len, hidden_size)
+
+        # Concat LSTM output with encoder_h for Affine input
+        affine_input = F.concat([hs, encoder_h_repeated], axis=2)
+        scores = self.affine(affine_input)  # (batch_size, seq_len, vocab_size)
+
+        return scores
+
+    def set_state(self, h, c):
+        """Set initial LSTM state and encoder hidden state."""
+        self.lstm.lstm.h = h
+        self.lstm.lstm.c = c
+        self._encoder_h = h
+
+    def reset_state(self):
+        """Reset LSTM state."""
+        self.lstm.reset_state()
+        self._encoder_h = None
+
+
 class Seq2Seq(Layer):
     """
     Seq2Seq model combining encoder and decoder.
     """
 
-    def __init__(self, vocab_size: int, embedding_dim: int, hidden_size: int):
+    def __init__(
+        self,
+        vocab_size: int,
+        embedding_dim: int,
+        hidden_size: int,
+        peeky: bool = False,
+    ):
         super().__init__()
         self.encoder = Encoder(vocab_size, embedding_dim, hidden_size)
-        self.decoder = Decoder(vocab_size, embedding_dim, hidden_size)
+        self.peeky = peeky
+        self.hidden_size = hidden_size
+        if peeky:
+            self.decoder = PeekyDecoder(vocab_size, embedding_dim, hidden_size)
+        else:
+            self.decoder = Decoder(vocab_size, embedding_dim, hidden_size)
         self.vocab_size = vocab_size
 
     def forward(self, *xs: Variable) -> Variable:
@@ -144,16 +222,25 @@ class Seq2Seq(Layer):
 
         # Generate one token at a time
         generated = []
-        current_input = as_variable(
-            np.full((batch_size, 1), start_id, dtype=np.int32)
-        )
+        current_input = as_variable(np.full((batch_size, 1), start_id, dtype=np.int32))
 
         with dpl.no_grad():
             for _ in range(max_len):
                 # Get next token scores
                 embedded = self.decoder.embed(current_input)
-                h = self.decoder.lstm.lstm(embedded[:, 0, :])
-                scores = self.decoder.affine.linear(h)  # (batch_size, vocab_size)
+
+                if self.peeky:
+                    assert self.decoder is PeekyDecoder
+                    # Peeky: concat encoder_h to embedding
+                    encoder_h = self.decoder._encoder_h
+                    lstm_in = F.concat([embedded[:, 0, :], encoder_h], axis=1)
+                    h = self.decoder.lstm.lstm(lstm_in)
+                    # Peeky: concat encoder_h to LSTM output
+                    affine_in = F.concat([h, encoder_h], axis=1)
+                    scores = self.decoder.affine.linear(affine_in)
+                else:
+                    h = self.decoder.lstm.lstm(embedded[:, 0, :])
+                    scores = self.decoder.affine.linear(h)
 
                 # Greedy decoding
                 next_token = np.argmax(scores.data_required, axis=1)
@@ -172,9 +259,15 @@ class Seq2SeqWithLoss(Layer):
     Seq2Seq model with built-in loss computation.
     """
 
-    def __init__(self, vocab_size: int, embedding_dim: int, hidden_size: int):
+    def __init__(
+        self,
+        vocab_size: int,
+        embedding_dim: int,
+        hidden_size: int,
+        peeky: bool = False,
+    ):
         super().__init__()
-        self.seq2seq = Seq2Seq(vocab_size, embedding_dim, hidden_size)
+        self.seq2seq = Seq2Seq(vocab_size, embedding_dim, hidden_size, peeky=peeky)
         self.loss_layer = L.TimeSoftmaxWithLoss()
 
     def forward(self, *xs: Variable) -> Variable:
@@ -218,7 +311,9 @@ print(f"Output length: {train_set.output_len}")
 print("\nExamples:")
 for i in range(3):
     x, t = train_set[i]
-    print(f"  Input: '{datasets.AddExpr.decode(x)}' -> Target: '{datasets.AddExpr.decode(t)}'")
+    print(
+        f"  Input: '{datasets.AddExpr.decode(x)}' -> Target: '{datasets.AddExpr.decode(t)}'"
+    )
 
 
 # %%
@@ -229,6 +324,7 @@ hidden_size = 128
 max_epoch = 30
 batch_size = 128
 lr = 0.001
+peeky = True
 
 print("\n" + "=" * 60)
 print("Training Configuration")
@@ -239,6 +335,7 @@ print(f"Hidden size: {hidden_size}")
 print(f"Max epoch: {max_epoch}")
 print(f"Batch size: {batch_size}")
 print(f"Learning rate: {lr}")
+print(f"Peeky decoder: {peeky}")
 print("=" * 60 + "\n")
 
 
@@ -250,11 +347,13 @@ test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False)
 
 # %%
 # Create model
-model = Seq2SeqWithLoss(vocab_size, embedding_dim, hidden_size)
+model = Seq2SeqWithLoss(vocab_size, embedding_dim, hidden_size, peeky=peeky)
 optimizer = O.Adam(lr=lr).setup(model)
 
 print("Model created successfully!")
-print(f"Model parameters: {sum(p.data.size for p in model.params() if p.data is not None)}")
+print(
+    f"Model parameters: {sum(p.data.size for p in model.params() if p.data is not None)}"
+)
 
 
 # %%
@@ -384,7 +483,9 @@ with dpl.no_grad():
         input_str = datasets.AddExpr.decode(x)
 
         status = "✓" if pred_str.strip() == target_str.strip() else "✗"
-        print(f"{status} Input: '{input_str}' -> Pred: '{pred_str}' (Target: '{target_str}')")
+        print(
+            f"{status} Input: '{input_str}' -> Pred: '{pred_str}' (Target: '{target_str}')"
+        )
 
 
 # %%
