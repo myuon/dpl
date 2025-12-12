@@ -57,7 +57,7 @@ class AttentionDecoder(Layer):
         self._encoder_hs = None
         self._last_attention_weights: list[Variable] = []
 
-    def step(self, token: Variable) -> tuple[Variable, Variable]:
+    def step(self, token: Variable) -> Variable:
         """
         Process a single timestep.
 
@@ -66,7 +66,6 @@ class AttentionDecoder(Layer):
 
         Returns:
             scores: Output scores (batch_size, vocab_size)
-            attention_weights: Attention weights (batch_size, seq_len)
         """
         if self._encoder_hs is None:
             raise ValueError("encoder_hs must be set before step")
@@ -82,11 +81,14 @@ class AttentionDecoder(Layer):
             self._encoder_hs, h
         )  # (batch_size, hidden_size), (batch_size, seq_len)
 
+        # Store attention weights
+        self._last_attention_weights.append(a)
+
         # Concatenate and project
         concat = F.concat([h, context], axis=1)  # (batch_size, hidden_size * 2)
         scores = self.affine(concat)  # (batch_size, vocab_size)
 
-        return scores, a
+        return scores
 
     def forward(self, *xs: Variable) -> Variable:
         """
@@ -100,14 +102,13 @@ class AttentionDecoder(Layer):
         batch_size, seq_len = x.shape
 
         all_scores = []
-        self._last_attention_weights = []
+        self._last_attention_weights = []  # Clear before starting
         for t in range(seq_len):
             token = x[:, t]  # (batch_size,)
-            scores, a = self.step(token)  # (batch_size, vocab_size)
+            scores = self.step(token)  # (batch_size, vocab_size)
             # Reshape for concat: (batch_size, vocab_size) -> (batch_size, 1, vocab_size)
             scores_3d = F.reshape(scores, (batch_size, 1, scores.shape[1]))
             all_scores.append(scores_3d)
-            self._last_attention_weights.append(a)
 
         # Concat along time axis: (batch_size, seq_len, vocab_size)
         return F.concat(all_scores, axis=1)
@@ -189,12 +190,13 @@ class AttentionSeq2Seq(Layer):
 
         # Generate one token at a time
         generated = []
+        self.decoder._last_attention_weights = []  # Clear before starting
         current_token = as_variable(np.full((batch_size,), start_id, dtype=np.int32))
 
         with dpl.no_grad():
             for t in range(max_len):
                 # Use decoder.step() - same as training
-                scores, _a = self.decoder.step(current_token)
+                scores = self.decoder.step(current_token)
 
                 # Softmax for debug
                 if debug and t < 3:
@@ -293,9 +295,10 @@ for i in range(min(3, len(train_set))):
 vocab_size = datasets.DateFormat.VOCAB_SIZE
 embedding_dim = 16
 hidden_size = 128
-max_epoch = 20
+max_epoch = 5
 batch_size = 128
-lr = 0.001
+lr = 0.01
+max_grad = 5.0
 
 print("=" * 60)
 print("Training Configuration")
@@ -400,6 +403,7 @@ trainer = Trainer(
     test_loader=test_loader,
     max_epoch=max_epoch,
     preprocess_fn=preprocess_fn,
+    max_grad=max_grad,
 )
 
 print("Starting training...")
@@ -456,33 +460,18 @@ with dpl.no_grad():
 import matplotlib.pyplot as plt
 
 
-def visualize_attention(model, x, t, ax=None):
-    """Visualize attention weights for a single example."""
-    x_var = as_variable(x.reshape(1, -1))
+def visualize_attention(model, x, generated, ax=None):
+    """Visualize attention weights for a single example.
 
-    # Get encoder hidden states
-    hs_enc = model.seq2seq.encoder(x_var)
-    h, c = model.seq2seq.encoder.get_state()
-    model.seq2seq.decoder.set_state(h, c, hs_enc)
-
-    # Generate and collect attention weights
-    generated = []
-    attention_weights = []
-    current_token = as_variable(np.full((1,), start_id, dtype=np.int32))
-
-    with dpl.no_grad():
-        for _ in range(len(t)):
-            # Use decoder.step() - same as training and generate
-            scores, a = model.seq2seq.decoder.step(current_token)
-            attention_weights.append(a.data_required[0])
-
-            next_token = np.argmax(scores.data_required, axis=1)
-            generated.append(next_token[0])
-
-            current_token = as_variable(next_token.astype(np.int32))
-
-    # Stack attention weights: (output_len, input_len)
-    attention_matrix = np.stack(attention_weights, axis=0)
+    Args:
+        model: AttentionSeq2SeqWithLoss model (must have called generate() first)
+        x: Input sequence (numpy array)
+        generated: Generated sequence from model.generate()
+        ax: Matplotlib axis (optional)
+    """
+    # Get attention weights from last generate() call
+    attention_weights = model.attention_weights
+    attention_matrix = np.stack([a.data_required[0] for a in attention_weights], axis=0)
 
     # Get input/output strings
     input_chars = list(datasets.DateFormat.decode(x))
@@ -491,7 +480,7 @@ def visualize_attention(model, x, t, ax=None):
     if ax is None:
         fig, ax = plt.subplots(figsize=(12, 6))
 
-    im = ax.imshow(attention_matrix, cmap="Blues", aspect="auto", vmin=0.0, vmax=1.0)
+    im = ax.imshow(attention_matrix, cmap="Blues", aspect="auto", vmin=0.0)
     plt.colorbar(im, ax=ax)
 
     ax.set_xticks(range(len(input_chars)))
@@ -513,12 +502,15 @@ axes = axes.flatten()
 with dpl.no_grad():
     for idx, ax in enumerate(axes):
         x, t = test_set[idx]
-        visualize_attention(model, x, t, ax=ax)
+        x_var = as_variable(x.reshape(1, -1))
+        generated = model.generate(x_var, start_id, len(t))
+        visualize_attention(model, x, generated[0], ax=ax)
 
         input_str = datasets.DateFormat.decode(x)
+        pred_str = datasets.DateFormat.decode(generated[0])
         target_str = datasets.DateFormat.decode(t)
-        ax.set_title(f"'{input_str.strip()}' -> '{target_str}'", fontsize=10)
+        status = "✓" if pred_str.strip() == target_str.strip() else "✗"
+        ax.set_title(f"{status} '{input_str.strip()}' -> '{pred_str}'", fontsize=10)
 
 plt.tight_layout()
 plt.show()
-print("Saved attention visualization to 'attention_visualization.png'")
