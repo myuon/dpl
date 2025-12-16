@@ -281,6 +281,56 @@ def test_conv2d_known_output():
     print("✓ test_conv2d_known_output passed")
 
 
+def test_conv2d_backward_jax():
+    """Test conv2d backward pass with JAX arrays
+
+    This test ensures that gradients flow correctly when using JAX arrays.
+    Previously, the JAX branch in conv2d returned `as_variable(y_data)` without
+    maintaining the computation graph, causing gradients to not propagate.
+    """
+    import jax.numpy as jnp
+
+    # Create JAX arrays
+    x_data = jnp.array(np.random.randn(2, 1, 4, 4).astype(np.float32))
+    Q_data = jnp.array(np.random.randn(2, 1, 3, 3).astype(np.float32))
+    b_data = jnp.zeros(2, dtype=jnp.float32)
+
+    x = Variable(x_data)
+    Q = Variable(Q_data)
+    b = Variable(b_data)
+
+    # Forward pass
+    y = F.conv2d(x, Q, b, stride=1, pad=0)
+
+    # Sum to get a scalar loss
+    loss = F.sum(y)
+
+    # Backward pass
+    loss.backward()
+
+    # All gradients should exist
+    assert x.grad is not None, "x.grad should not be None (JAX)"
+    assert Q.grad is not None, "Q.grad should not be None (JAX)"
+    assert b.grad is not None, "b.grad should not be None (JAX)"
+
+    # Check gradient shapes
+    assert (
+        x.grad.shape == x.shape
+    ), f"x.grad shape mismatch: {x.grad.shape} vs {x.shape}"
+    assert (
+        Q.grad.shape == Q.shape
+    ), f"Q.grad shape mismatch: {Q.grad.shape} vs {Q.shape}"
+    assert (
+        b.grad.shape == b.shape
+    ), f"b.grad shape mismatch: {b.grad.shape} vs {b.shape}"
+
+    # Check that gradients are not all zeros
+    assert not np.allclose(np.array(x.grad.data), 0), "x.grad should not be all zeros (JAX)"
+    assert not np.allclose(np.array(Q.grad.data), 0), "Q.grad should not be all zeros (JAX)"
+
+    print("✓ test_conv2d_backward_jax passed")
+
+
 if __name__ == "__main__":
     test_conv2d_forward()
     test_conv2d_forward_with_padding()
@@ -289,4 +339,5 @@ if __name__ == "__main__":
     test_conv2d_backward()
     test_conv2d_gradient_check()
     test_conv2d_known_output()
+    test_conv2d_backward_jax()
     print("\n✓ All conv2d tests passed!")

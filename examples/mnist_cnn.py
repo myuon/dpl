@@ -12,7 +12,8 @@ import numpy as np
 batch_size = 1000
 max_epoch = 15
 hidden_size = 1000
-lr = 0.1
+lr = 0.001
+max_grad = 25.0
 
 # Load MNIST dataset
 train_set = datasets.MNIST(train=True)
@@ -42,8 +43,8 @@ model = L.Sequential(
     F.relu,
     L.Linear(10),
 )
-optimizer = O.SGD(lr=lr).setup(model)
-optimizer.add_hook(O.WeightDecay(1e-4))
+optimizer = O.Adam(lr=lr).setup(model)
+# optimizer.add_hook(O.WeightDecay(1e-4))
 
 if dpl.metal.gpu_enable:
     model.to_gpu()
@@ -68,6 +69,8 @@ trainer = Trainer(
     test_loader=test_loader,
     max_epoch=max_epoch,
     preprocess_fn=preprocess,
+    max_grad=max_grad,
+    clip_grads=True,
 )
 
 x, t = train_set[0]
@@ -77,7 +80,7 @@ x_var = as_variable(x)
 conv_layer = model["l0"]
 assert isinstance(conv_layer, L.Conv2d)
 conv_layer.prepare(x_var)
-conv_weights_initial = conv_layer.W.data_required
+conv_weights_initial = conv_layer.W.data_required.copy()
 
 # Train the model
 trainer.run()
@@ -154,6 +157,48 @@ with no_grad():
         ax.axis("off")
 
     plt.suptitle("Learned Conv Filters (5x5) After Training")
+    plt.tight_layout()
+    plt.show()
+
+    # Compute and visualize weight differences
+    weight_diff = conv_weights - conv_weights_initial
+
+    # Print difference statistics
+    print("\n" + "=" * 50)
+    print("Conv Layer Weight Difference Statistics:")
+    print("=" * 50)
+    print(f"Shape: {weight_diff.shape}")
+    print(f"Mean:  {np.mean(weight_diff):.6f}")
+    print(f"Std:   {np.std(weight_diff):.6f}")
+    print(f"Min:   {np.min(weight_diff):.6f}")
+    print(f"Max:   {np.max(weight_diff):.6f}")
+    print(f"Abs Mean: {np.mean(np.abs(weight_diff)):.6f}")
+    print(f"Abs Max:  {np.max(np.abs(weight_diff)):.6f}")
+
+    # Per-filter statistics
+    print("\nPer-filter difference (L2 norm):")
+    for i in range(min(16, weight_diff.shape[0])):
+        filter_diff = weight_diff[i, 0, :, :]
+        l2_norm = np.sqrt(np.sum(filter_diff**2))
+        print(
+            f"  Filter {i:2d}: L2={l2_norm:.6f}, mean={np.mean(filter_diff):.6f}, std={np.std(filter_diff):.6f}"
+        )
+
+    # Visualize the first 16 filter differences
+    fig, axes = plt.subplots(4, 4, figsize=(8, 8))
+    vmax = np.max(np.abs(weight_diff[:16]))  # symmetric color scale
+    for i in range(16):
+        ax = axes[i // 4, i % 4]
+        filter_diff = weight_diff[i, 0, :, :]
+        ax.imshow(filter_diff, cmap="RdBu", vmin=-vmax, vmax=vmax)
+        ax.set_title(f"Filter {i}")
+        ax.axis("off")
+
+    plt.suptitle("Conv Filter Weight Differences (After - Before)")
+    from matplotlib.colors import Normalize
+
+    sm = plt.cm.ScalarMappable(cmap="RdBu", norm=Normalize(vmin=-vmax, vmax=vmax))
+    fig.colorbar(sm, ax=axes, shrink=0.6)
     plt.tight_layout()
     plt.show()
 

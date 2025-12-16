@@ -10,3 +10,4 @@ examples/datasets/ptb.train*
 examples/datasets/ptb.valid*
 examples/datasets/ptb.vocab*
 *.npz
+*.pprof
