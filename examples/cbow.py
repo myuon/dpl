@@ -75,7 +75,7 @@ print("\nTraining completed!")
 
 # %%
 # Plot training loss
-trainer.plot_history(history_type="loss", title="CBOW Training Loss")
+trainer.plot_history(history_types=["loss"], title="CBOW Training Loss")
 
 # %%
 # Test the learned embeddings

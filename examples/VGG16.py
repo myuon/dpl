@@ -5,7 +5,7 @@ from PIL import Image
 import matplotlib.pyplot as plt
 import numpy as np
 
-image_path = "../../data/zebra.jpg"
+image_path = "../data/zebra.jpg"
 
 image = Image.open(image_path)
 plt.imshow(image)

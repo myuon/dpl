@@ -44,7 +44,7 @@ model = L.Sequential(
     L.Linear(10),
 )
 optimizer = O.Adam(lr=lr).setup(model)
-# optimizer.add_hook(O.WeightDecay(1e-4))
+optimizer.add_hook(O.WeightDecay(1e-4))
 
 if dpl.metal.gpu_enable:
     model.to_gpu()
@@ -132,31 +132,47 @@ with no_grad():
     conv_weights = conv_layer.W.data_required
     print(f"Conv1 weights shape: {conv_weights.shape}")  # (30, 1, 5, 5)
 
-    # Visualize the first 16 filters (before)
-    fig, axes = plt.subplots(4, 4, figsize=(8, 8))
-    for i in range(16):
-        ax = axes[i // 4, i % 4]
-        # Get filter i, channel 0 (since input has 1 channel)
+    # Print statistics for comparison
+    print("\n" + "=" * 50)
+    print("Initial Weights Statistics:")
+    print(
+        f"  Mean: {np.mean(conv_weights_initial):.6f}, Std: {np.std(conv_weights_initial):.6f}"
+    )
+    print(
+        f"  Min:  {np.min(conv_weights_initial):.6f}, Max: {np.max(conv_weights_initial):.6f}"
+    )
+    print("Learned Weights Statistics:")
+    print(f"  Mean: {np.mean(conv_weights):.6f}, Std: {np.std(conv_weights):.6f}")
+    print(f"  Min:  {np.min(conv_weights):.6f}, Max: {np.max(conv_weights):.6f}")
+
+    # Use same scale for before/after comparison
+    num_filters = conv_weights.shape[0]  # 30
+    all_weights = np.concatenate([conv_weights_initial, conv_weights])
+    vmin, vmax = np.min(all_weights), np.max(all_weights)
+
+    # Visualize all filters (before) - 5x6 grid for 30 filters
+    fig, axes = plt.subplots(5, 6, figsize=(10, 8))
+    for i in range(num_filters):
+        ax = axes[i // 6, i % 6]
         filter_img = conv_weights_initial[i, 0, :, :]
-        im = ax.imshow(filter_img, cmap="gray")
-        ax.set_title(f"Filter {i}")
+        ax.imshow(filter_img, cmap="gray", vmin=vmin, vmax=vmax)
+        ax.set_title(f"{i}", fontsize=8)
         ax.axis("off")
 
-    plt.suptitle("Learned Conv Filters (5x5) Before Training")
+    plt.suptitle("Conv Filters (5x5) Before Training")
     plt.tight_layout()
     plt.show()
 
-    # Visualize the first 16 filters (after)
-    fig, axes = plt.subplots(4, 4, figsize=(8, 8))
-    for i in range(16):
-        ax = axes[i // 4, i % 4]
-        # Get filter i, channel 0 (since input has 1 channel)
+    # Visualize all filters (after) - 5x6 grid for 30 filters
+    fig, axes = plt.subplots(5, 6, figsize=(10, 8))
+    for i in range(num_filters):
+        ax = axes[i // 6, i % 6]
         filter_img = conv_weights[i, 0, :, :]
-        im = ax.imshow(filter_img, cmap="gray")
-        ax.set_title(f"Filter {i}")
+        ax.imshow(filter_img, cmap="gray", vmin=vmin, vmax=vmax)
+        ax.set_title(f"{i}", fontsize=8)
         ax.axis("off")
 
-    plt.suptitle("Learned Conv Filters (5x5) After Training")
+    plt.suptitle("Conv Filters (5x5) After Training")
     plt.tight_layout()
     plt.show()
 
@@ -177,21 +193,21 @@ with no_grad():
 
     # Per-filter statistics
     print("\nPer-filter difference (L2 norm):")
-    for i in range(min(16, weight_diff.shape[0])):
+    for i in range(num_filters):
         filter_diff = weight_diff[i, 0, :, :]
         l2_norm = np.sqrt(np.sum(filter_diff**2))
         print(
             f"  Filter {i:2d}: L2={l2_norm:.6f}, mean={np.mean(filter_diff):.6f}, std={np.std(filter_diff):.6f}"
         )
 
-    # Visualize the first 16 filter differences
-    fig, axes = plt.subplots(4, 4, figsize=(8, 8))
-    vmax = np.max(np.abs(weight_diff[:16]))  # symmetric color scale
-    for i in range(16):
-        ax = axes[i // 4, i % 4]
+    # Visualize all filter differences - 5x6 grid for 30 filters
+    fig, axes = plt.subplots(5, 6, figsize=(10, 8))
+    vmax = np.max(np.abs(weight_diff))  # symmetric color scale
+    for i in range(num_filters):
+        ax = axes[i // 6, i % 6]
         filter_diff = weight_diff[i, 0, :, :]
         ax.imshow(filter_diff, cmap="RdBu", vmin=-vmax, vmax=vmax)
-        ax.set_title(f"Filter {i}")
+        ax.set_title(f"{i}", fontsize=8)
         ax.axis("off")
 
     plt.suptitle("Conv Filter Weight Differences (After - Before)")
