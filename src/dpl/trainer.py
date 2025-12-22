@@ -64,24 +64,29 @@ class Trainer:
         self.total_time = 0.0
 
     def _clip_gradients(self) -> None:
-        import numpy as np
-
         """Clip gradients by global norm."""
-        # Calculate global norm
-        total_norm = 0.0
+        import jax.numpy as jnp
+
+        # Collect all gradients and calculate global norm in one pass
+        grads = []
         for param in self.model.params():
             if param.grad is not None:
-                param_norm = F.sum(param.grad**2)
-                total_norm += param_norm.data_required
+                grads.append(param.grad)
 
-        total_norm = np.sqrt(total_norm)
+        if not grads:
+            return
+
+        # Calculate global norm using raw arrays (avoid F.sum overhead)
+        total_norm_sq = sum(
+            float(jnp.sum(g.data_required ** 2)) for g in grads
+        )
+        total_norm = total_norm_sq ** 0.5
 
         # Clip gradients if norm exceeds max_grad
         if total_norm > self.max_grad:
             clip_coef = self.max_grad / (total_norm + 1e-6)
-            for param in self.model.params():
-                if param.grad is not None:
-                    param.grad *= clip_coef
+            for g in grads:
+                g.data = g.data_required * clip_coef
 
     def train_epoch(self) -> tuple[float, Optional[float]]:
         """Train for one epoch.
