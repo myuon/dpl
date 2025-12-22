@@ -19,6 +19,12 @@ class Trainer:
         preprocess_fn: Optional[
             Callable[[ndarray, ndarray], tuple[ndarray, ndarray]]
         ] = None,
+        train_preprocess_fn: Optional[
+            Callable[[ndarray, ndarray], tuple[ndarray, ndarray]]
+        ] = None,
+        eval_preprocess_fn: Optional[
+            Callable[[ndarray, ndarray], tuple[ndarray, ndarray]]
+        ] = None,
         on_epoch_start: Optional[Callable[["Trainer"], None]] = None,
         on_epoch_end: Optional[Callable[["Trainer"], None]] = None,
         on_batch_end: Optional[Callable[["Trainer"], None]] = None,
@@ -34,6 +40,8 @@ class Trainer:
         self.test_loader = test_loader
         self.max_epoch = max_epoch
         self.preprocess_fn = preprocess_fn
+        self.train_preprocess_fn = train_preprocess_fn
+        self.eval_preprocess_fn = eval_preprocess_fn
         self.truncate_bptt = truncate_bptt
         self.clip_grads = clip_grads
         self.max_grad = max_grad
@@ -90,9 +98,10 @@ class Trainer:
         batch_count = 0
 
         for x, t in self.train_loader:
-            # Preprocess if needed
-            if self.preprocess_fn is not None:
-                x, t = self.preprocess_fn(x, t)
+            # Preprocess if needed (train_preprocess_fn takes priority)
+            preprocess = self.train_preprocess_fn or self.preprocess_fn
+            if preprocess is not None:
+                x, t = preprocess(x, t)
 
             # Convert to Variable
             x, t = as_variable(x), as_variable(t)
@@ -150,9 +159,10 @@ class Trainer:
 
         with no_grad():
             for x, t in self.test_loader:
-                # Preprocess if needed
-                if self.preprocess_fn is not None:
-                    x, t = self.preprocess_fn(x, t)
+                # Preprocess if needed (eval_preprocess_fn takes priority)
+                preprocess = self.eval_preprocess_fn or self.preprocess_fn
+                if preprocess is not None:
+                    x, t = preprocess(x, t)
 
                 # Convert to Variable
                 x, t = as_variable(x), as_variable(t)

@@ -2,6 +2,7 @@
 
 import argparse
 
+import jax
 import numpy as np
 from sklearn.datasets import fetch_openml
 
@@ -10,6 +11,7 @@ import dpl.functions as F
 import dpl.optimizers as O
 from dpl import DataLoader, Dataset, Trainer
 
+from augment import augment_batch
 from model import create_model
 
 
@@ -48,6 +50,24 @@ def main():
     parser.add_argument(
         "--gpu", action="store_true", default=True, help="Use GPU if available"
     )
+    parser.add_argument(
+        "--no-augment",
+        action="store_true",
+        help="Disable data augmentation",
+    )
+    parser.add_argument(
+        "--rot-deg", type=float, default=15.0, help="Max rotation angle in degrees"
+    )
+    parser.add_argument(
+        "--shift-px", type=float, default=3.0, help="Max shift in pixels"
+    )
+    parser.add_argument(
+        "--cutout-max", type=int, default=10, help="Max cutout size"
+    )
+    parser.add_argument(
+        "--p-cutout", type=float, default=0.5, help="Cutout probability"
+    )
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for augmentation")
     args = parser.parse_args()
 
     print("=" * 50)
@@ -59,6 +79,10 @@ def main():
     print(f"Hidden size: {args.hidden_size}")
     print(f"Output: {args.output}")
     print(f"GPU: {args.gpu and dpl.metal.gpu_enable}")
+    print(f"Augmentation: {not args.no_augment}")
+    if not args.no_augment:
+        print(f"  rot_deg: {args.rot_deg}, shift_px: {args.shift_px}")
+        print(f"  cutout: 0-{args.cutout_max}, p={args.p_cutout}")
     print("=" * 50)
 
     # Load MNIST dataset
@@ -84,10 +108,32 @@ def main():
         train_loader.to_gpu()
         test_loader.to_gpu()
 
-    # Preprocessing function to reshape images for CNN
-    def preprocess(x, t):
-        # Reshape input to (N, C, H, W) format for CNN
+    # Setup augmentation with JAX PRNG
+    rng_key = jax.random.PRNGKey(args.seed)
+
+    # Preprocessing function for evaluation (no augmentation)
+    def eval_preprocess(x, t):
         x = x.reshape(-1, 1, 28, 28)
+        return x, t
+
+    # Preprocessing function for training (with augmentation)
+    def train_preprocess(x, t):
+        nonlocal rng_key
+        x = x.reshape(-1, 1, 28, 28)
+
+        if not args.no_augment:
+            rng_key, subkey = jax.random.split(rng_key)
+            x = augment_batch(
+                x,
+                subkey,
+                rot_deg=args.rot_deg,
+                shift_px=args.shift_px,
+                cutout_size_range=(0, args.cutout_max),
+                p_rotate=0.7,
+                p_shift=0.7,
+                p_cutout=args.p_cutout,
+            )
+
         return x, t
 
     # Create trainer
@@ -99,7 +145,8 @@ def main():
         train_loader=train_loader,
         test_loader=test_loader,
         max_epoch=args.epochs,
-        preprocess_fn=preprocess,
+        train_preprocess_fn=train_preprocess,
+        eval_preprocess_fn=eval_preprocess,
         max_grad=25.0,
         clip_grads=True,
     )
