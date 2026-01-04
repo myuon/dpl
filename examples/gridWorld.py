@@ -164,6 +164,121 @@ class GridWorld:
         plt.show()
 
 
+class RandomGenGridWorld(GridWorld):
+    """ランダム生成のグリッドワールド環境"""
+
+    def __init__(self, seed: int | None = None):
+        # 親クラスの__init__は呼ばずに独自に初期化
+        self.height = 10
+        self.width = 10
+        self.start = (9, 0)  # 左下
+        self.goal = (0, 9)  # 右上
+        self.state = self.start
+
+        rng = np.random.default_rng(seed)
+
+        # 利用可能なセル（start, goal以外）
+        available = [
+            (y, x)
+            for y in range(self.height)
+            for x in range(self.width)
+            if (y, x) not in {self.start, self.goal}
+        ]
+        rng.shuffle(available)
+
+        total_cells = len(available)
+        n_walls = int(total_cells * 0.2)
+        n_rewards = int(total_cells * 0.2)
+
+        # 壁を配置
+        self.walls = set(available[:n_walls])
+
+        # 報酬を配置（壁以外の場所から選択）
+        reward_candidates = available[n_walls : n_walls + n_rewards]
+        self.reward_map = {pos: rng.choice([-1.0, 1.0]) for pos in reward_candidates}
+
+        # ゴールには+100報酬
+        self.reward_map[self.goal] = 100.0
+
+    def render_v_pi(self, V, pi):
+        """価値関数と方策を可視化（大きなグリッド用）"""
+        import matplotlib.pyplot as plt
+
+        fig, ax = plt.subplots(figsize=(12, 12))
+
+        # 価値関数を2D配列に変換
+        v_grid = np.zeros((self.height, self.width))
+        for y in range(self.height):
+            for x in range(self.width):
+                v_grid[y, x] = V[(y, x)]
+
+        im = ax.imshow(v_grid, cmap="RdYlGn", vmin=-10, vmax=100)
+        ax.set_xticks(range(self.width))
+        ax.set_yticks(range(self.height))
+
+        # 矢印の方向
+        arrow_map = {
+            self.UP: (0, -0.3),
+            self.DOWN: (0, 0.3),
+            self.LEFT: (-0.3, 0),
+            self.RIGHT: (0.3, 0),
+        }
+
+        # 各セルに値と矢印を表示
+        for y in range(self.height):
+            for x in range(self.width):
+                state = (y, x)
+                if state in self.walls:
+                    ax.text(
+                        x, y, "#", ha="center", va="center", fontsize=10, color="black"
+                    )
+                else:
+                    # 報酬マスの場合は右上に報酬を表示
+                    if state in self.reward_map:
+                        ax.text(
+                            x + 0.3,
+                            y - 0.3,
+                            f"{self.reward_map[state]:+.0f}",
+                            ha="center",
+                            va="center",
+                            fontsize=6,
+                            color="blue",
+                        )
+                    # 価値を表示
+                    ax.text(
+                        x,
+                        y + 0.25,
+                        f"{V[state]:.1f}",
+                        ha="center",
+                        va="center",
+                        fontsize=6,
+                        color="black",
+                    )
+                    # 矢印を表示（確率に応じた透明度）
+                    if state in pi:
+                        for action, prob in pi[state].items():
+                            if prob > 0:
+                                dx, dy = arrow_map[action]
+                                scale = prob * 0.8
+                                ax.arrow(
+                                    x - dx * scale / 2,
+                                    y - 0.1 - dy * scale / 2,
+                                    dx * scale,
+                                    dy * scale,
+                                    head_width=0.1 * scale,
+                                    head_length=0.06 * scale,
+                                    fc="black",
+                                    ec="black",
+                                    alpha=prob,
+                                )
+
+        fig.colorbar(im, ax=ax)
+        ax.set_title("Value Function & Policy (RandomGenGridWorld)")
+        ax.set_xlim(-0.5, self.width - 0.5)
+        ax.set_ylim(self.height - 0.5, -0.5)
+        plt.show()
+
+
 UP = GridWorld.UP
 DOWN = GridWorld.DOWN
 LEFT = GridWorld.LEFT
@@ -351,3 +466,42 @@ pi, V = policy_iter(
 # 価値反復法
 V = defaultdict(lambda: 0)
 pi, V = value_iter(V, env, gamma=0.9, on_update=lambda pi, V: env.render_v_pi(V, pi))
+
+# =============================================================================
+# RandomGenGridWorld
+# =============================================================================
+
+# %%
+random_env = RandomGenGridWorld(seed=42)
+print(random_env.render())
+
+# %%
+# 方策反復法 (RandomGenGridWorld)
+V = defaultdict(lambda: 0)
+pi = defaultdict(lambda: {UP: 0.25, DOWN: 0.25, LEFT: 0.25, RIGHT: 0.25})
+policy_iter_count = [0]
+
+
+def on_policy_update(pi, V):
+    policy_iter_count[0] += 1
+    if policy_iter_count[0] % 3 == 0:
+        random_env.render_v_pi(V, pi)
+
+
+pi, V = policy_iter(pi, V, random_env, gamma=0.9, on_policy_update=on_policy_update)
+random_env.render_v_pi(V, pi)  # 最終結果
+
+# %%
+# 価値反復法 (RandomGenGridWorld)
+V = defaultdict(lambda: 0)
+value_iter_count = [0]
+
+
+def on_value_update(pi, V):
+    value_iter_count[0] += 1
+    if value_iter_count[0] % 3 == 0:
+        random_env.render_v_pi(V, pi)
+
+
+pi, V = value_iter(V, random_env, gamma=0.9, on_update=on_value_update)
+random_env.render_v_pi(V, pi)  # 最終結果
