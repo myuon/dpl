@@ -504,7 +504,7 @@ class TdAgent:
         """ランダムに行動を選択"""
         return np.random.choice(self.env.get_actions())
 
-    def eval(
+    def update(
         self,
         state: tuple[int, int],
         action: int,
@@ -512,7 +512,8 @@ class TdAgent:
         next_state: tuple[int, int],
         done: bool,
     ):
-        """TD更新: Q(s,a) ← Q(s,a) + alpha * (r + gamma * max_a' Q(s',a') - Q(s,a))"""
+        """Q値と方策を更新"""
+        # TD更新: Q(s,a) ← Q(s,a) + alpha * (r + gamma * max_a' Q(s',a') - Q(s,a))
         r = reward if reward is not None else 0.0
         if done:
             target = r
@@ -523,16 +524,10 @@ class TdAgent:
         # Q値を更新
         self.Q[(state, action)] += self.alpha * (target - self.Q[(state, action)])
 
-    def update_policy(self):
-        """Q(s,a)からepsilon-greedy方策でpiを更新"""
-        n_actions = len(self.env.get_actions())
-        for state in self.env.states():
-            if state in self.env.walls or state == self.env.goal:
-                continue
-
-            # 各行動のQ値を取得
+        # 方策を更新
+        if state not in self.env.walls and state != self.env.goal:
+            n_actions = len(self.env.get_actions())
             action_values = {a: self.Q[(state, a)] for a in self.env.get_actions()}
-
             best_action = max(action_values, key=lambda a: action_values[a])
             # epsilon-greedy: 各アクションにepsilon/|A|、best_actionに追加で(1-epsilon)
             self.pi[state] = {
@@ -886,9 +881,9 @@ trainer = AgentTrainer(
         state, action, reward
     ),
     on_done=lambda agent: agent.update(),
-    on_episode_end=lambda agent, env, episode: env.render_q(agent.Q)
-    if (episode + 1) % 100 == 0
-    else None,
+    on_episode_end=lambda agent, env, episode: (
+        env.render_q(agent.Q) if (episode + 1) % 100 == 0 else None
+    ),
 )
 trainer.train()
 
@@ -911,17 +906,16 @@ trainer = AgentTrainer(
     env,
     td_agent,
     num_episodes=1000,
-    on_step=lambda agent, state, action, reward, next_state, done: agent.eval(
+    on_step=lambda agent, state, action, reward, next_state, done: agent.update(
         state, action, reward, next_state, done
     ),
-    on_episode_end=lambda agent, env, episode: env.render_q(agent.Q)
-    if (episode + 1) % 100 == 0
-    else None,
+    on_episode_end=lambda agent, env, episode: (
+        env.render_q(agent.Q) if (episode + 1) % 100 == 0 else None
+    ),
 )
 trainer.train()
 
 # Qから最適方策とV(s)を導出して表示
-td_agent.update_policy()
 V_from_Q = {s: max(td_agent.Q[(s, a)] for a in env.get_actions()) for s in env.states()}
 env.render_v_pi(V_from_Q, td_agent.pi)
 
@@ -933,13 +927,13 @@ q_agent = QLearningAgent(env, gamma=0.9)
 trainer = AgentTrainer(
     env,
     q_agent,
-    num_episodes=1000,
+    num_episodes=10000,
     on_step=lambda agent, state, action, reward, next_state, done: agent.update(
         state, action, reward, next_state, done
     ),
-    on_episode_end=lambda agent, env, episode: env.render_q(agent.Q)
-    if (episode + 1) % 100 == 0
-    else None,
+    on_episode_end=lambda agent, env, episode: (
+        env.render_q(agent.Q) if (episode + 1) % 1000 == 0 else None
+    ),
 )
 trainer.train()
 
