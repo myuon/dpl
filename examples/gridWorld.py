@@ -545,8 +545,8 @@ class TdAgent:
 class QLearningAgent:
     """Q-learningエージェント（Off-policy）
 
-    - b (behavior policy): epsilon-greedy（探索用）
-    - pi (target policy): greedy（常にbest actionを選択）
+    - 行動選択: epsilon-greedy（探索用）
+    - 目標方策: Qからgreedyに導出
     """
 
     def __init__(
@@ -562,21 +562,16 @@ class QLearningAgent:
         self.alpha = alpha
         # Q(s, a): 状態・行動ペアの価値
         self.Q: dict[tuple[tuple[int, int], int], float] = defaultdict(lambda: 0.0)
-        # pi: 目標方策（greedy）- 初期値は一様ランダム
-        n_actions = len(env.get_actions())
-        self.pi: dict[tuple[int, int], dict[int, float]] = defaultdict(
-            lambda: {a: 1.0 / n_actions for a in self.env.get_actions()}
-        )
-        # b: 行動方策（epsilon-greedy）- 初期値は一様ランダム
-        self.b: dict[tuple[int, int], dict[int, float]] = defaultdict(
-            lambda: {a: 1.0 / n_actions for a in self.env.get_actions()}
-        )
 
     def get_action(self, state: tuple[int, int]) -> int:
-        """行動方策bに従ってアクションを選択"""
-        actions = list(self.b[state].keys())
-        probs = list(self.b[state].values())
-        return np.random.choice(actions, p=probs)
+        """epsilon-greedy戦略でアクションを選択"""
+        if np.random.random() < self.epsilon:
+            # 探索: ランダムにアクションを選択
+            return np.random.choice(self.env.get_actions())
+        else:
+            # 活用: Q値が最大のアクションを選択
+            action_values = {a: self.Q[(state, a)] for a in self.env.get_actions()}
+            return max(action_values, key=lambda a: action_values[a])
 
     def update(
         self,
@@ -586,34 +581,16 @@ class QLearningAgent:
         next_state: tuple[int, int],
         done: bool,
     ):
-        """Q値と方策を更新"""
+        """Q値を更新"""
         # TD更新: Q(s,a) ← Q(s,a) + alpha * (r + gamma * max_a' Q(s',a') - Q(s,a))
         r = reward if reward is not None else 0.0
         if done:
             target = r
         else:
-            # 次の状態での最大Q値（greedy policy piに基づく）
+            # 次の状態での最大Q値
             next_q_max = max(self.Q[(next_state, a)] for a in self.env.get_actions())
             target = r + self.gamma * next_q_max
         self.Q[(state, action)] += self.alpha * (target - self.Q[(state, action)])
-
-        # 方策を更新
-        if state not in self.env.walls and state != self.env.goal:
-            n_actions = len(self.env.get_actions())
-            action_values = {a: self.Q[(state, a)] for a in self.env.get_actions()}
-            best_action = max(action_values, key=lambda a: action_values[a])
-
-            # pi: greedy（best actionに確率1）
-            self.pi[state] = {
-                a: 1.0 if a == best_action else 0.0 for a in self.env.get_actions()
-            }
-
-            # b: epsilon-greedy
-            self.b[state] = {
-                a: self.epsilon / n_actions
-                + (1 - self.epsilon if a == best_action else 0)
-                for a in self.env.get_actions()
-            }
 
 
 # =============================================================================
@@ -937,9 +914,15 @@ trainer = AgentTrainer(
 )
 trainer.train()
 
-# 最終結果を表示
+# 最終結果を表示（QからV, piを導出）
 V_from_Q = {s: max(q_agent.Q[(s, a)] for a in env.get_actions()) for s in env.states()}
-env.render_v_pi(V_from_Q, q_agent.pi)
+pi_from_Q = {}
+for state in env.states():
+    if state in env.walls or state == env.goal:
+        continue
+    best_action = max(env.get_actions(), key=lambda a: q_agent.Q[(state, a)])
+    pi_from_Q[state] = {a: 1.0 if a == best_action else 0.0 for a in env.get_actions()}
+env.render_v_pi(V_from_Q, pi_from_Q)
 
 # # =============================================================================
 # # RandomGenGridWorld
