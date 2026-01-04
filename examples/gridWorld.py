@@ -172,7 +172,12 @@ class GridWorld:
         fig, ax = plt.subplots(figsize=(8, 6))
 
         # カラーマップの範囲を決定
-        q_values = [Q[(s, a)] for s in self.states() if s not in self.walls for a in self.get_actions()]
+        q_values = [
+            Q[(s, a)]
+            for s in self.states()
+            if s not in self.walls
+            for a in self.get_actions()
+        ]
         if q_values:
             vmin, vmax = min(q_values), max(q_values)
             if vmin == vmax:
@@ -190,7 +195,9 @@ class GridWorld:
                     # 壁は灰色で塗りつぶし
                     rect = Rectangle((x - 0.5, y - 0.5), 1, 1, color="gray")
                     ax.add_patch(rect)
-                    ax.text(x, y, "#", ha="center", va="center", fontsize=12, color="white")
+                    ax.text(
+                        x, y, "#", ha="center", va="center", fontsize=12, color="white"
+                    )
                 else:
                     # セルの中心と4隅の座標
                     cx, cy = x, y
@@ -204,9 +211,21 @@ class GridWorld:
                     # 各方向の三角形を描画
                     triangles = {
                         self.UP: [corners["top_left"], corners["top_right"], (cx, cy)],
-                        self.DOWN: [corners["bottom_right"], corners["bottom_left"], (cx, cy)],
-                        self.LEFT: [corners["top_left"], corners["bottom_left"], (cx, cy)],
-                        self.RIGHT: [corners["top_right"], corners["bottom_right"], (cx, cy)],
+                        self.DOWN: [
+                            corners["bottom_right"],
+                            corners["bottom_left"],
+                            (cx, cy),
+                        ],
+                        self.LEFT: [
+                            corners["top_left"],
+                            corners["bottom_left"],
+                            (cx, cy),
+                        ],
+                        self.RIGHT: [
+                            corners["top_right"],
+                            corners["bottom_right"],
+                            (cx, cy),
+                        ],
                     }
 
                     # テキスト位置
@@ -220,12 +239,25 @@ class GridWorld:
                     for action in self.get_actions():
                         q_val = Q[(state, action)]
                         color = cmap(norm(q_val))
-                        triangle = Polygon(triangles[action], facecolor=color, edgecolor="black", linewidth=0.5)
+                        triangle = Polygon(
+                            triangles[action],
+                            facecolor=color,
+                            edgecolor="black",
+                            linewidth=0.5,
+                        )
                         ax.add_patch(triangle)
 
                         # Q値を表示
                         tx, ty = text_pos[action]
-                        ax.text(tx, ty, f"{q_val:.2f}", ha="center", va="center", fontsize=7, color="black")
+                        ax.text(
+                            tx,
+                            ty,
+                            f"{q_val:.2f}",
+                            ha="center",
+                            va="center",
+                            fontsize=7,
+                            color="black",
+                        )
 
         # カラーバー
         sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
@@ -385,7 +417,13 @@ class RandomGenGridWorld(GridWorld):
 class MonteCarloAgent:
     """モンテカルロ法によるエージェント"""
 
-    def __init__(self, env: GridWorld, gamma: float = 0.9, epsilon: float = 0.1, alpha: float = 0.1):
+    def __init__(
+        self,
+        env: GridWorld,
+        gamma: float = 0.9,
+        epsilon: float = 0.1,
+        alpha: float = 0.1,
+    ):
         self.env = env
         self.gamma = gamma
         self.epsilon = epsilon
@@ -433,7 +471,8 @@ class MonteCarloAgent:
             best_action = max(action_values, key=lambda a: action_values[a])
             # epsilon-greedy: 各アクションにepsilon/|A|、best_actionに追加で(1-epsilon)
             self.pi[state] = {
-                a: self.epsilon / n_actions + (1 - self.epsilon if a == best_action else 0)
+                a: self.epsilon / n_actions
+                + (1 - self.epsilon if a == best_action else 0)
                 for a in self.env.get_actions()
             }
 
@@ -446,7 +485,13 @@ class MonteCarloAgent:
 class TdAgent:
     """TD法（Q-learning）によるエージェント"""
 
-    def __init__(self, env: GridWorld, gamma: float = 0.9, epsilon: float = 0.1, alpha: float = 0.1):
+    def __init__(
+        self,
+        env: GridWorld,
+        gamma: float = 0.9,
+        epsilon: float = 0.1,
+        alpha: float = 0.1,
+    ):
         self.env = env
         self.gamma = gamma
         self.epsilon = epsilon
@@ -459,7 +504,14 @@ class TdAgent:
         """ランダムに行動を選択"""
         return np.random.choice(self.env.get_actions())
 
-    def eval(self, state: tuple[int, int], action: int, reward: float | None, next_state: tuple[int, int], done: bool):
+    def eval(
+        self,
+        state: tuple[int, int],
+        action: int,
+        reward: float | None,
+        next_state: tuple[int, int],
+        done: bool,
+    ):
         """TD更新: Q(s,a) ← Q(s,a) + alpha * (r + gamma * max_a' Q(s',a') - Q(s,a))"""
         r = reward if reward is not None else 0.0
         if done:
@@ -484,7 +536,8 @@ class TdAgent:
             best_action = max(action_values, key=lambda a: action_values[a])
             # epsilon-greedy: 各アクションにepsilon/|A|、best_actionに追加で(1-epsilon)
             self.pi[state] = {
-                a: self.epsilon / n_actions + (1 - self.epsilon if a == best_action else 0)
+                a: self.epsilon / n_actions
+                + (1 - self.epsilon if a == best_action else 0)
                 for a in self.env.get_actions()
             }
 
@@ -501,29 +554,43 @@ class QLearningAgent:
     - pi (target policy): greedy（常にbest actionを選択）
     """
 
-    def __init__(self, env: GridWorld, gamma: float = 0.9, epsilon: float = 0.1, alpha: float = 0.1):
+    def __init__(
+        self,
+        env: GridWorld,
+        gamma: float = 0.9,
+        epsilon: float = 0.1,
+        alpha: float = 0.1,
+    ):
         self.env = env
         self.gamma = gamma
         self.epsilon = epsilon
         self.alpha = alpha
         # Q(s, a): 状態・行動ペアの価値
         self.Q: dict[tuple[tuple[int, int], int], float] = defaultdict(lambda: 0.0)
-        # pi: 目標方策（greedy）
-        self.pi: dict[tuple[int, int], dict[int, float]] = {}
-        # b: 行動方策（epsilon-greedy）
-        self.b: dict[tuple[int, int], dict[int, float]] = {}
+        # pi: 目標方策（greedy）- 初期値は一様ランダム
+        n_actions = len(env.get_actions())
+        self.pi: dict[tuple[int, int], dict[int, float]] = defaultdict(
+            lambda: {a: 1.0 / n_actions for a in self.env.get_actions()}
+        )
+        # b: 行動方策（epsilon-greedy）- 初期値は一様ランダム
+        self.b: dict[tuple[int, int], dict[int, float]] = defaultdict(
+            lambda: {a: 1.0 / n_actions for a in self.env.get_actions()}
+        )
 
     def get_action(self, state: tuple[int, int]) -> int:
         """行動方策bに従ってアクションを選択"""
-        if state not in self.b:
-            # 初回は一様ランダム
-            return np.random.choice(self.env.get_actions())
-        # bから確率的に選択
         actions = list(self.b[state].keys())
         probs = list(self.b[state].values())
         return np.random.choice(actions, p=probs)
 
-    def update(self, state: tuple[int, int], action: int, reward: float | None, next_state: tuple[int, int], done: bool):
+    def update(
+        self,
+        state: tuple[int, int],
+        action: int,
+        reward: float | None,
+        next_state: tuple[int, int],
+        done: bool,
+    ):
         """Q値と方策を更新"""
         # TD更新: Q(s,a) ← Q(s,a) + alpha * (r + gamma * max_a' Q(s',a') - Q(s,a))
         r = reward if reward is not None else 0.0
@@ -542,11 +609,14 @@ class QLearningAgent:
             best_action = max(action_values, key=lambda a: action_values[a])
 
             # pi: greedy（best actionに確率1）
-            self.pi[state] = {a: 1.0 if a == best_action else 0.0 for a in self.env.get_actions()}
+            self.pi[state] = {
+                a: 1.0 if a == best_action else 0.0 for a in self.env.get_actions()
+            }
 
             # b: epsilon-greedy
             self.b[state] = {
-                a: self.epsilon / n_actions + (1 - self.epsilon if a == best_action else 0)
+                a: self.epsilon / n_actions
+                + (1 - self.epsilon if a == best_action else 0)
                 for a in self.env.get_actions()
             }
 
@@ -744,7 +814,7 @@ pi, V = value_iter(V, env, gamma=0.9, on_update=lambda pi, V: env.render_v_pi(V,
 env = GridWorld()
 agent = MonteCarloAgent(env, gamma=0.9)
 
-for episode in range(100):
+for episode in range(1000):
     state = env.reset()
     agent.reset()
     while True:
@@ -757,7 +827,7 @@ for episode in range(100):
         state = next_state
 
     # 10エピソードごとにQ(s,a)を可視化
-    if (episode + 1) % 10 == 0:
+    if (episode + 1) % 100 == 0:
         env.render_q(agent.Q)
 
 # Qから最適方策とV(s)を導出して表示
@@ -775,7 +845,7 @@ env.render_v_pi(V_from_Q, pi_from_Q)
 env = GridWorld()
 td_agent = TdAgent(env, gamma=0.9)
 
-for episode in range(100):
+for episode in range(1000):
     state = env.reset()
     while True:
         action = td_agent.get_action(state)
@@ -787,7 +857,7 @@ for episode in range(100):
         state = next_state
 
     # 10エピソードごとにQ(s,a)を可視化
-    if (episode + 1) % 10 == 0:
+    if (episode + 1) % 100 == 0:
         env.render_q(td_agent.Q)
 
 # Qから最適方策とV(s)を導出して表示
@@ -800,7 +870,7 @@ env.render_v_pi(V_from_Q, td_agent.pi)
 env = GridWorld()
 q_agent = QLearningAgent(env, gamma=0.9)
 
-for episode in range(100):
+for episode in range(1000):
     state = env.reset()
     while True:
         # 行動方策b（epsilon-greedy）でアクションを選択
@@ -813,7 +883,7 @@ for episode in range(100):
         state = next_state
 
     # 10エピソードごとにQ(s,a)を可視化
-    if (episode + 1) % 10 == 0:
+    if (episode + 1) % 100 == 0:
         env.render_q(q_agent.Q)
 
 # 最終結果を表示
