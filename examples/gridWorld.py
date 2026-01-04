@@ -438,6 +438,57 @@ class MonteCarloAgent:
             }
 
 
+# =============================================================================
+# TD法 (Temporal Difference)
+# =============================================================================
+
+
+class TdAgent:
+    """TD法（Q-learning）によるエージェント"""
+
+    def __init__(self, env: GridWorld, gamma: float = 0.9, epsilon: float = 0.1, alpha: float = 0.1):
+        self.env = env
+        self.gamma = gamma
+        self.epsilon = epsilon
+        self.alpha = alpha
+        # Q(s, a): 状態・行動ペアの価値
+        self.Q: dict[tuple[tuple[int, int], int], float] = defaultdict(lambda: 0.0)
+        self.pi: dict[tuple[int, int], dict[int, float]] = {}
+
+    def get_action(self, state: tuple[int, int]) -> int:
+        """ランダムに行動を選択"""
+        return np.random.choice(self.env.get_actions())
+
+    def eval(self, state: tuple[int, int], action: int, reward: float | None, next_state: tuple[int, int], done: bool):
+        """TD更新: Q(s,a) ← Q(s,a) + alpha * (r + gamma * max_a' Q(s',a') - Q(s,a))"""
+        r = reward if reward is not None else 0.0
+        if done:
+            target = r
+        else:
+            # 次の状態での最大Q値
+            next_q_max = max(self.Q[(next_state, a)] for a in self.env.get_actions())
+            target = r + self.gamma * next_q_max
+        # Q値を更新
+        self.Q[(state, action)] += self.alpha * (target - self.Q[(state, action)])
+
+    def update_policy(self):
+        """Q(s,a)からepsilon-greedy方策でpiを更新"""
+        n_actions = len(self.env.get_actions())
+        for state in self.env.states():
+            if state in self.env.walls or state == self.env.goal:
+                continue
+
+            # 各行動のQ値を取得
+            action_values = {a: self.Q[(state, a)] for a in self.env.get_actions()}
+
+            best_action = max(action_values, key=lambda a: action_values[a])
+            # epsilon-greedy: 各アクションにepsilon/|A|、best_actionに追加で(1-epsilon)
+            self.pi[state] = {
+                a: self.epsilon / n_actions + (1 - self.epsilon if a == best_action else 0)
+                for a in self.env.get_actions()
+            }
+
+
 UP = GridWorld.UP
 DOWN = GridWorld.DOWN
 LEFT = GridWorld.LEFT
@@ -656,6 +707,31 @@ for state in env.states():
     best_action = max(env.get_actions(), key=lambda a: agent.Q[(state, a)])
     pi_from_Q[state] = {a: 1.0 if a == best_action else 0.0 for a in env.get_actions()}
 env.render_v_pi(V_from_Q, pi_from_Q)
+
+# %%
+# TD法 (Q-learning)
+env = GridWorld()
+td_agent = TdAgent(env, gamma=0.9)
+
+for episode in range(100):
+    state = env.reset()
+    while True:
+        action = td_agent.get_action(state)
+        next_state, reward, done = env.step(action)
+        # 各ステップでQ値を更新
+        td_agent.eval(state, action, reward, next_state, done)
+        if done:
+            break
+        state = next_state
+
+    # 10エピソードごとにQ(s,a)を可視化
+    if (episode + 1) % 10 == 0:
+        env.render_q(td_agent.Q)
+
+# Qから最適方策とV(s)を導出して表示
+td_agent.update_policy()
+V_from_Q = {s: max(td_agent.Q[(s, a)] for a in env.get_actions()) for s in env.states()}
+env.render_v_pi(V_from_Q, td_agent.pi)
 
 # # =============================================================================
 # # RandomGenGridWorld
