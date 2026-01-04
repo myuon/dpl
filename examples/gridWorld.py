@@ -111,12 +111,29 @@ class GridWorld:
             for x in range(self.width):
                 state = (y, x)
                 if state in self.walls:
-                    ax.text(x, y, "#", ha="center", va="center", fontsize=14, color="black")
+                    ax.text(
+                        x, y, "#", ha="center", va="center", fontsize=14, color="black"
+                    )
                 elif state in self.reward_map:
-                    ax.text(x, y, f"{self.reward_map[state]:+.1f}", ha="center", va="center", color="black")
+                    ax.text(
+                        x,
+                        y,
+                        f"{self.reward_map[state]:+.1f}",
+                        ha="center",
+                        va="center",
+                        color="black",
+                    )
                 else:
                     # 価値を表示
-                    ax.text(x, y + 0.25, f"{V[state]:.2f}", ha="center", va="center", fontsize=9, color="black")
+                    ax.text(
+                        x,
+                        y + 0.25,
+                        f"{V[state]:.2f}",
+                        ha="center",
+                        va="center",
+                        fontsize=9,
+                        color="black",
+                    )
                     # 矢印を表示（確率に応じた透明度）
                     if state in pi:
                         for action, prob in pi[state].items():
@@ -124,10 +141,15 @@ class GridWorld:
                                 dx, dy = arrow_map[action]
                                 scale = prob  # 確率に応じてスケール
                                 ax.arrow(
-                                    x - dx * scale / 2, y - 0.1 - dy * scale / 2,
-                                    dx * scale, dy * scale,
-                                    head_width=0.12 * scale, head_length=0.08 * scale,
-                                    fc="black", ec="black", alpha=prob
+                                    x - dx * scale / 2,
+                                    y - 0.1 - dy * scale / 2,
+                                    dx * scale,
+                                    dy * scale,
+                                    head_width=0.12 * scale,
+                                    head_length=0.08 * scale,
+                                    fc="black",
+                                    ec="black",
+                                    alpha=prob,
                                 )
 
         fig.colorbar(im, ax=ax)
@@ -144,6 +166,11 @@ RIGHT = GridWorld.RIGHT
 
 V = defaultdict(lambda: 0)
 pi = defaultdict(lambda: {UP: 0.25, DOWN: 0.25, LEFT: 0.25, RIGHT: 0.25})
+
+
+# =============================================================================
+# 方策反復法 (Policy Iteration)
+# =============================================================================
 
 
 def eval_onestep(pi, V, env: GridWorld, gamma: float):
@@ -216,7 +243,9 @@ def greedy_policy(V, env: GridWorld, gamma: float):
     return new_pi
 
 
-def policy_iter(pi, V, env: GridWorld, gamma: float, threshold: float = 1e-4, on_policy_update=None):
+def policy_iter(
+    pi, V, env: GridWorld, gamma: float, threshold: float = 1e-4, on_policy_update=None
+):
     """方策反復: 方策評価と方策改善を繰り返す"""
     while True:
         # 方策評価
@@ -246,13 +275,74 @@ def policy_iter(pi, V, env: GridWorld, gamma: float, threshold: float = 1e-4, on
     return pi, V
 
 
+# =============================================================================
+# 価値反復法 (Value Iteration)
+# =============================================================================
+
+
+def value_iter_onestep(V, env: GridWorld, gamma: float):
+    """価値反復法を1ステップ実行し、新しいVを返す"""
+    new_V = defaultdict(lambda: 0)
+
+    for state in env.states():
+        if state in env.walls or state in env.reward_map:
+            continue
+
+        # 各アクションの価値を計算し、最大値を選択
+        action_values = []
+        for action in env.get_actions():
+            env.state = state
+            next_state, reward, done = env.step(action)
+            r = reward if reward is not None else 0
+            action_values.append(r + gamma * V[next_state])
+
+        new_V[state] = max(action_values)
+
+    return new_V
+
+
+def value_iter(
+    V, env: GridWorld, gamma: float, threshold: float = 1e-4, on_update=None
+):
+    """価値反復法を収束するまで繰り返す"""
+    while True:
+        new_V = value_iter_onestep(V, env, gamma)
+
+        # 更新量の最大値を計算
+        max_delta = 0
+        for state in env.states():
+            if state in env.walls or state in env.reward_map:
+                continue
+            max_delta = max(max_delta, abs(new_V[state] - V[state]))
+
+        V = new_V
+
+        # コールバック呼び出し
+        if on_update is not None:
+            # 現在のVからgreedy方策を導出
+            pi = greedy_policy(V, env, gamma)
+            on_update(pi, V)
+
+        if max_delta < threshold:
+            break
+
+    # 最終的なgreedy方策を返す
+    pi = greedy_policy(V, env, gamma)
+    return pi, V
+
+
 # %%
 env = GridWorld()
 print(env.render())
 
 # %%
+# 方策反復法
 V = defaultdict(lambda: 0)
 pi, V = policy_iter(
-    pi, V, env, gamma=0.9,
-    on_policy_update=lambda pi, V: env.render_v_pi(V, pi)
+    pi, V, env, gamma=0.9, on_policy_update=lambda pi, V: env.render_v_pi(V, pi)
 )
+
+# %%
+# 価値反復法
+V = defaultdict(lambda: 0)
+pi, V = value_iter(V, env, gamma=0.9, on_update=lambda pi, V: env.render_v_pi(V, pi))
