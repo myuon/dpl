@@ -308,13 +308,14 @@ class RandomGenGridWorld(GridWorld):
 class MonteCarloAgent:
     """モンテカルロ法によるエージェント"""
 
-    def __init__(self, env: GridWorld, gamma: float = 0.9):
+    def __init__(self, env: GridWorld, gamma: float = 0.9, epsilon: float = 0.1, alpha: float = 0.1):
         self.env = env
         self.gamma = gamma
+        self.epsilon = epsilon
+        self.alpha = alpha
         self.episode_memory: list[tuple[tuple[int, int], int, float | None]] = []
-        self.V: dict[tuple[int, int], float] = defaultdict(lambda: 0.0)
+        self.Q: dict[tuple[int, int], float] = defaultdict(lambda: 0.0)
         self.pi: dict[tuple[int, int], dict[int, float]] = {}
-        self.count: dict[tuple[int, int], int] = defaultdict(int)
 
     def reset(self):
         """エピソードメモリをクリア"""
@@ -329,21 +330,21 @@ class MonteCarloAgent:
         self.episode_memory.append((state, action, reward))
 
     def eval(self):
-        """エピソードメモリを逆向きに辿ってVを更新（インクリメンタル更新）"""
+        """エピソードメモリを逆向きに辿ってQを更新（固定学習率alpha）"""
         G = 0.0
         for state, action, reward in reversed(self.episode_memory):
             r = reward if reward is not None else 0.0
             G = r + self.gamma * G
-            self.count[state] += 1
-            # V(s) ← V(s) + (1/n) * (G - V(s))
-            self.V[state] += (G - self.V[state]) / self.count[state]
+            # Q(s) ← Q(s) + alpha * (G - Q(s))
+            self.Q[state] += self.alpha * (G - self.Q[state])
 
     def update(self):
-        """Vを更新し、greedy方策でpiを更新"""
-        # Vを更新
+        """Qを更新し、epsilon-greedy方策でpiを更新"""
+        # Qを更新
         self.eval()
 
-        # Vからgreedy方策を計算してpiを更新
+        # Qからepsilon-greedy方策を計算してpiを更新
+        n_actions = len(self.env.get_actions())
         for state in self.env.states():
             if state in self.env.walls or state == self.env.goal:
                 continue
@@ -353,11 +354,13 @@ class MonteCarloAgent:
                 self.env.state = state
                 next_state, reward, done = self.env.step(action)
                 r = reward if reward is not None else 0
-                action_values[action] = r + self.gamma * self.V[next_state]
+                action_values[action] = r + self.gamma * self.Q[next_state]
 
             best_action = max(action_values, key=lambda a: action_values[a])
+            # epsilon-greedy: 各アクションにepsilon/|A|、best_actionに追加で(1-epsilon)
             self.pi[state] = {
-                a: 1.0 if a == best_action else 0.0 for a in self.env.get_actions()
+                a: self.epsilon / n_actions + (1 - self.epsilon if a == best_action else 0)
+                for a in self.env.get_actions()
             }
 
 
@@ -562,13 +565,13 @@ for episode in range(10000):
         next_state, reward, done = env.step(action)
         agent.add(state, action, reward)
         if done:
-            agent.eval()
+            agent.update()
             break
         state = next_state
 
 # greedy方策を計算して表示
-pi = greedy_policy(agent.V, env, gamma=0.9)
-env.render_v_pi(agent.V, pi)
+pi = greedy_policy(agent.Q, env, gamma=0.9)
+env.render_v_pi(agent.Q, pi)
 
 # # =============================================================================
 # # RandomGenGridWorld
