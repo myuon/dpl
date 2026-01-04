@@ -85,8 +85,14 @@ class GridWorld:
             grid.append(" ".join(row))
         return "\n".join(grid)
 
-    def render_v_pi(self, V, pi):
-        """価値関数と方策を可視化"""
+    def render_v_pi(self, V, pi, show: bool = True):
+        """価値関数と方策を可視化
+
+        Args:
+            V: 価値関数
+            pi: 方策
+            show: Trueの場合plt.show()を呼ぶ、Falseの場合figを返す
+        """
         import matplotlib.pyplot as plt
 
         fig, ax = plt.subplots(figsize=(6, 4))
@@ -161,9 +167,13 @@ class GridWorld:
         ax.set_title("Value Function & Policy")
         ax.set_xlim(-0.5, self.width - 0.5)
         ax.set_ylim(self.height - 0.5, -0.5)
-        plt.show()
 
-    def render_q(self, Q: dict[tuple[tuple[int, int], int], float]):
+        if show:
+            plt.show()
+        else:
+            return fig
+
+    def render_q(self, Q: dict[tuple[tuple[int, int], int], float], show: bool = True):
         """Q(s,a)を可視化: 各セルを4方向に分割してQ値を表示"""
         import matplotlib.pyplot as plt
         from matplotlib.patches import Polygon, Rectangle
@@ -173,7 +183,7 @@ class GridWorld:
 
         # カラーマップの範囲を決定
         q_values = [
-            Q[(s, a)]
+            Q.get((s, a), 0.0)
             for s in self.states()
             if s not in self.walls
             for a in self.get_actions()
@@ -237,7 +247,7 @@ class GridWorld:
                     }
 
                     for action in self.get_actions():
-                        q_val = Q[(state, action)]
+                        q_val = Q.get((state, action), 0.0)
                         color = cmap(norm(q_val))
                         triangle = Polygon(
                             triangles[action],
@@ -270,7 +280,11 @@ class GridWorld:
         ax.set_yticks(range(self.height))
         ax.set_title("Q(s, a) Values")
         ax.set_aspect("equal")
-        plt.show()
+
+        if show:
+            plt.show()
+        else:
+            return fig
 
 
 class RandomGenGridWorld(GridWorld):
@@ -309,7 +323,7 @@ class RandomGenGridWorld(GridWorld):
         # ゴールには+100報酬
         self.reward_map[self.goal] = 100.0
 
-    def render_v_pi(self, V, pi):
+    def render_v_pi(self, V, pi, show: bool = True):
         """価値関数と方策を可視化（大きなグリッド用）"""
         import matplotlib.pyplot as plt
 
@@ -406,7 +420,11 @@ class RandomGenGridWorld(GridWorld):
         ax.set_title("Value Function & Policy (RandomGenGridWorld)")
         ax.set_xlim(-0.5, self.width - 0.5)
         ax.set_ylim(self.height - 0.5, -0.5)
-        plt.show()
+
+        if show:
+            plt.show()
+        else:
+            return fig
 
 
 # =============================================================================
