@@ -163,6 +163,83 @@ class GridWorld:
         ax.set_ylim(self.height - 0.5, -0.5)
         plt.show()
 
+    def render_q(self, Q: dict[tuple[tuple[int, int], int], float]):
+        """Q(s,a)を可視化: 各セルを4方向に分割してQ値を表示"""
+        import matplotlib.pyplot as plt
+        from matplotlib.patches import Polygon, Rectangle
+        from matplotlib.colors import Normalize
+
+        fig, ax = plt.subplots(figsize=(8, 6))
+
+        # カラーマップの範囲を決定
+        q_values = [Q[(s, a)] for s in self.states() if s not in self.walls for a in self.get_actions()]
+        if q_values:
+            vmin, vmax = min(q_values), max(q_values)
+            if vmin == vmax:
+                vmin, vmax = vmin - 0.5, vmax + 0.5
+        else:
+            vmin, vmax = -1, 1
+
+        cmap = plt.get_cmap("RdYlGn")
+        norm = Normalize(vmin=vmin, vmax=vmax)
+
+        for y in range(self.height):
+            for x in range(self.width):
+                state = (y, x)
+                if state in self.walls:
+                    # 壁は灰色で塗りつぶし
+                    rect = Rectangle((x - 0.5, y - 0.5), 1, 1, color="gray")
+                    ax.add_patch(rect)
+                    ax.text(x, y, "#", ha="center", va="center", fontsize=12, color="white")
+                else:
+                    # セルの中心と4隅の座標
+                    cx, cy = x, y
+                    corners = {
+                        "top_left": (cx - 0.5, cy - 0.5),
+                        "top_right": (cx + 0.5, cy - 0.5),
+                        "bottom_left": (cx - 0.5, cy + 0.5),
+                        "bottom_right": (cx + 0.5, cy + 0.5),
+                    }
+
+                    # 各方向の三角形を描画
+                    triangles = {
+                        self.UP: [corners["top_left"], corners["top_right"], (cx, cy)],
+                        self.DOWN: [corners["bottom_right"], corners["bottom_left"], (cx, cy)],
+                        self.LEFT: [corners["top_left"], corners["bottom_left"], (cx, cy)],
+                        self.RIGHT: [corners["top_right"], corners["bottom_right"], (cx, cy)],
+                    }
+
+                    # テキスト位置
+                    text_pos = {
+                        self.UP: (cx, cy - 0.25),
+                        self.DOWN: (cx, cy + 0.25),
+                        self.LEFT: (cx - 0.25, cy),
+                        self.RIGHT: (cx + 0.25, cy),
+                    }
+
+                    for action in self.get_actions():
+                        q_val = Q[(state, action)]
+                        color = cmap(norm(q_val))
+                        triangle = Polygon(triangles[action], facecolor=color, edgecolor="black", linewidth=0.5)
+                        ax.add_patch(triangle)
+
+                        # Q値を表示
+                        tx, ty = text_pos[action]
+                        ax.text(tx, ty, f"{q_val:.2f}", ha="center", va="center", fontsize=7, color="black")
+
+        # カラーバー
+        sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+        sm.set_array([])
+        fig.colorbar(sm, ax=ax)
+
+        ax.set_xlim(-0.5, self.width - 0.5)
+        ax.set_ylim(self.height - 0.5, -0.5)
+        ax.set_xticks(range(self.width))
+        ax.set_yticks(range(self.height))
+        ax.set_title("Q(s, a) Values")
+        ax.set_aspect("equal")
+        plt.show()
+
 
 class RandomGenGridWorld(GridWorld):
     """ランダム生成のグリッドワールド環境"""
@@ -314,7 +391,8 @@ class MonteCarloAgent:
         self.epsilon = epsilon
         self.alpha = alpha
         self.episode_memory: list[tuple[tuple[int, int], int, float | None]] = []
-        self.Q: dict[tuple[int, int], float] = defaultdict(lambda: 0.0)
+        # Q(s, a): 状態・行動ペアの価値
+        self.Q: dict[tuple[tuple[int, int], int], float] = defaultdict(lambda: 0.0)
         self.pi: dict[tuple[int, int], dict[int, float]] = {}
 
     def reset(self):
@@ -330,31 +408,27 @@ class MonteCarloAgent:
         self.episode_memory.append((state, action, reward))
 
     def eval(self):
-        """エピソードメモリを逆向きに辿ってQを更新（固定学習率alpha）"""
+        """エピソードメモリを逆向きに辿ってQ(s,a)を更新（固定学習率alpha）"""
         G = 0.0
         for state, action, reward in reversed(self.episode_memory):
             r = reward if reward is not None else 0.0
             G = r + self.gamma * G
-            # Q(s) ← Q(s) + alpha * (G - Q(s))
-            self.Q[state] += self.alpha * (G - self.Q[state])
+            # Q(s,a) ← Q(s,a) + alpha * (G - Q(s,a))
+            self.Q[(state, action)] += self.alpha * (G - self.Q[(state, action)])
 
     def update(self):
-        """Qを更新し、epsilon-greedy方策でpiを更新"""
-        # Qを更新
+        """Q(s,a)を更新し、epsilon-greedy方策でpiを更新"""
+        # Q(s,a)を更新
         self.eval()
 
-        # Qからepsilon-greedy方策を計算してpiを更新
+        # Q(s,a)からepsilon-greedy方策を計算してpiを更新
         n_actions = len(self.env.get_actions())
         for state in self.env.states():
             if state in self.env.walls or state == self.env.goal:
                 continue
 
-            action_values = {}
-            for action in self.env.get_actions():
-                self.env.state = state
-                next_state, reward, done = self.env.step(action)
-                r = reward if reward is not None else 0
-                action_values[action] = r + self.gamma * self.Q[next_state]
+            # 各行動のQ値を取得
+            action_values = {a: self.Q[(state, a)] for a in self.env.get_actions()}
 
             best_action = max(action_values, key=lambda a: action_values[a])
             # epsilon-greedy: 各アクションにepsilon/|A|、best_actionに追加で(1-epsilon)
@@ -557,7 +631,7 @@ pi, V = value_iter(V, env, gamma=0.9, on_update=lambda pi, V: env.render_v_pi(V,
 env = GridWorld()
 agent = MonteCarloAgent(env, gamma=0.9)
 
-for episode in range(10000):
+for episode in range(100):
     state = env.reset()
     agent.reset()
     while True:
@@ -569,9 +643,19 @@ for episode in range(10000):
             break
         state = next_state
 
-# greedy方策を計算して表示
-pi = greedy_policy(agent.Q, env, gamma=0.9)
-env.render_v_pi(agent.Q, pi)
+    # 10エピソードごとにQ(s,a)を可視化
+    if (episode + 1) % 10 == 0:
+        env.render_q(agent.Q)
+
+# Qから最適方策とV(s)を導出して表示
+V_from_Q = {s: max(agent.Q[(s, a)] for a in env.get_actions()) for s in env.states()}
+pi_from_Q = {}
+for state in env.states():
+    if state in env.walls or state == env.goal:
+        continue
+    best_action = max(env.get_actions(), key=lambda a: agent.Q[(state, a)])
+    pi_from_Q[state] = {a: 1.0 if a == best_action else 0.0 for a in env.get_actions()}
+env.render_v_pi(V_from_Q, pi_from_Q)
 
 # # =============================================================================
 # # RandomGenGridWorld
