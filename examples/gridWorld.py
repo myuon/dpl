@@ -224,6 +224,24 @@ class RandomGenGridWorld(GridWorld):
             self.RIGHT: (0.3, 0),
         }
 
+        # startからgoalまでの最適パスを計算
+        optimal_path = set()  # (state, action) のセット
+        current = self.start
+        visited = set()
+        max_steps = self.height * self.width  # 無限ループ防止
+        for _ in range(max_steps):
+            if current == self.goal or current in visited:
+                break
+            visited.add(current)
+            if current in pi:
+                # max actionを選択
+                best_action = max(pi[current], key=lambda a: pi[current][a])
+                optimal_path.add((current, best_action))
+                # 次の状態へ移動
+                self.state = current
+                next_state, _, _ = self.step(best_action)
+                current = next_state
+
         # 各セルに値と矢印を表示
         for y in range(self.height):
             for x in range(self.width):
@@ -260,6 +278,9 @@ class RandomGenGridWorld(GridWorld):
                             if prob > 0:
                                 dx, dy = arrow_map[action]
                                 scale = prob * 0.8
+                                # 最適パス上の矢印は赤色
+                                is_on_path = (state, action) in optimal_path
+                                color = "red" if is_on_path else "black"
                                 ax.arrow(
                                     x - dx * scale / 2,
                                     y - 0.1 - dy * scale / 2,
@@ -267,9 +288,9 @@ class RandomGenGridWorld(GridWorld):
                                     dy * scale,
                                     head_width=0.1 * scale,
                                     head_length=0.06 * scale,
-                                    fc="black",
-                                    ec="black",
-                                    alpha=prob,
+                                    fc=color,
+                                    ec=color,
+                                    alpha=1.0 if is_on_path else prob,
                                 )
 
         fig.colorbar(im, ax=ax)
