@@ -23,6 +23,9 @@ class GridWorld:
             (1, 3): -1.0,
         }
 
+        # ゴール（エピソード終了）
+        self.goal = (0, 3)
+
         # 壁（侵入不可）
         self.walls = {(1, 1)}
 
@@ -50,7 +53,7 @@ class GridWorld:
 
         self.state = (y, x)
         reward = self.reward_map.get(self.state, None)
-        done = self.state in self.reward_map  # 報酬マスに到達したら終了
+        done = self.state == self.goal  # ゴールに到達したら終了
 
         return self.state, reward, done
 
@@ -114,16 +117,18 @@ class GridWorld:
                     ax.text(
                         x, y, "#", ha="center", va="center", fontsize=14, color="black"
                     )
-                elif state in self.reward_map:
-                    ax.text(
-                        x,
-                        y,
-                        f"{self.reward_map[state]:+.1f}",
-                        ha="center",
-                        va="center",
-                        color="black",
-                    )
                 else:
+                    # 報酬マスの場合は右上に報酬を表示
+                    if state in self.reward_map:
+                        ax.text(
+                            x + 0.3,
+                            y - 0.3,
+                            f"{self.reward_map[state]:+.1f}",
+                            ha="center",
+                            va="center",
+                            fontsize=8,
+                            color="blue",
+                        )
                     # 価値を表示
                     ax.text(
                         x,
@@ -178,8 +183,8 @@ def eval_onestep(pi, V, env: GridWorld, gamma: float):
     new_V = defaultdict(lambda: 0)
 
     for state in env.states():
-        # 壁と終端状態はスキップ
-        if state in env.walls or state in env.reward_map:
+        # 壁とゴールはスキップ
+        if state in env.walls or state == env.goal:
             continue
 
         action_probs = pi[state]
@@ -207,7 +212,7 @@ def policy_eval(pi, V, env: GridWorld, gamma: float, threshold: float = 1e-4):
         # 更新量の最大値を計算
         max_delta = 0
         for state in env.states():
-            if state in env.walls or state in env.reward_map:
+            if state in env.walls or state == env.goal:
                 continue
             max_delta = max(max_delta, abs(new_V[state] - V[state]))
 
@@ -224,7 +229,7 @@ def greedy_policy(V, env: GridWorld, gamma: float):
     new_pi = {}
 
     for state in env.states():
-        if state in env.walls or state in env.reward_map:
+        if state in env.walls or state == env.goal:
             continue
 
         action_values = {}
@@ -261,7 +266,7 @@ def policy_iter(
         # 方策が変化しなくなったら終了
         unchanged = True
         for state in env.states():
-            if state in env.walls or state in env.reward_map:
+            if state in env.walls or state == env.goal:
                 continue
             if pi[state] != new_pi[state]:
                 unchanged = False
@@ -285,7 +290,7 @@ def value_iter_onestep(V, env: GridWorld, gamma: float):
     new_V = defaultdict(lambda: 0)
 
     for state in env.states():
-        if state in env.walls or state in env.reward_map:
+        if state in env.walls or state == env.goal:
             continue
 
         # 各アクションの価値を計算し、最大値を選択
@@ -311,7 +316,7 @@ def value_iter(
         # 更新量の最大値を計算
         max_delta = 0
         for state in env.states():
-            if state in env.walls or state in env.reward_map:
+            if state in env.walls or state == env.goal:
                 continue
             max_delta = max(max_delta, abs(new_V[state] - V[state]))
 
