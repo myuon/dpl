@@ -489,6 +489,68 @@ class TdAgent:
             }
 
 
+# =============================================================================
+# Q-learning (Off-policy TD)
+# =============================================================================
+
+
+class QLearningAgent:
+    """Q-learningエージェント（Off-policy）
+
+    - b (behavior policy): epsilon-greedy（探索用）
+    - pi (target policy): greedy（常にbest actionを選択）
+    """
+
+    def __init__(self, env: GridWorld, gamma: float = 0.9, epsilon: float = 0.1, alpha: float = 0.1):
+        self.env = env
+        self.gamma = gamma
+        self.epsilon = epsilon
+        self.alpha = alpha
+        # Q(s, a): 状態・行動ペアの価値
+        self.Q: dict[tuple[tuple[int, int], int], float] = defaultdict(lambda: 0.0)
+        # pi: 目標方策（greedy）
+        self.pi: dict[tuple[int, int], dict[int, float]] = {}
+        # b: 行動方策（epsilon-greedy）
+        self.b: dict[tuple[int, int], dict[int, float]] = {}
+
+    def get_action(self, state: tuple[int, int]) -> int:
+        """行動方策bに従ってアクションを選択"""
+        if state not in self.b:
+            # 初回は一様ランダム
+            return np.random.choice(self.env.get_actions())
+        # bから確率的に選択
+        actions = list(self.b[state].keys())
+        probs = list(self.b[state].values())
+        return np.random.choice(actions, p=probs)
+
+    def update(self, state: tuple[int, int], action: int, reward: float | None, next_state: tuple[int, int], done: bool):
+        """Q値と方策を更新"""
+        # TD更新: Q(s,a) ← Q(s,a) + alpha * (r + gamma * max_a' Q(s',a') - Q(s,a))
+        r = reward if reward is not None else 0.0
+        if done:
+            target = r
+        else:
+            # 次の状態での最大Q値（greedy policy piに基づく）
+            next_q_max = max(self.Q[(next_state, a)] for a in self.env.get_actions())
+            target = r + self.gamma * next_q_max
+        self.Q[(state, action)] += self.alpha * (target - self.Q[(state, action)])
+
+        # 方策を更新
+        if state not in self.env.walls and state != self.env.goal:
+            n_actions = len(self.env.get_actions())
+            action_values = {a: self.Q[(state, a)] for a in self.env.get_actions()}
+            best_action = max(action_values, key=lambda a: action_values[a])
+
+            # pi: greedy（best actionに確率1）
+            self.pi[state] = {a: 1.0 if a == best_action else 0.0 for a in self.env.get_actions()}
+
+            # b: epsilon-greedy
+            self.b[state] = {
+                a: self.epsilon / n_actions + (1 - self.epsilon if a == best_action else 0)
+                for a in self.env.get_actions()
+            }
+
+
 UP = GridWorld.UP
 DOWN = GridWorld.DOWN
 LEFT = GridWorld.LEFT
@@ -732,6 +794,31 @@ for episode in range(100):
 td_agent.update_policy()
 V_from_Q = {s: max(td_agent.Q[(s, a)] for a in env.get_actions()) for s in env.states()}
 env.render_v_pi(V_from_Q, td_agent.pi)
+
+# %%
+# Q-learning (Off-policy)
+env = GridWorld()
+q_agent = QLearningAgent(env, gamma=0.9)
+
+for episode in range(100):
+    state = env.reset()
+    while True:
+        # 行動方策b（epsilon-greedy）でアクションを選択
+        action = q_agent.get_action(state)
+        next_state, reward, done = env.step(action)
+        # 各ステップでQ値と方策を更新
+        q_agent.update(state, action, reward, next_state, done)
+        if done:
+            break
+        state = next_state
+
+    # 10エピソードごとにQ(s,a)を可視化
+    if (episode + 1) % 10 == 0:
+        env.render_q(q_agent.Q)
+
+# 最終結果を表示
+V_from_Q = {s: max(q_agent.Q[(s, a)] for a in env.get_actions()) for s in env.states()}
+env.render_v_pi(V_from_Q, q_agent.pi)
 
 # # =============================================================================
 # # RandomGenGridWorld
