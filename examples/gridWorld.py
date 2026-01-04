@@ -313,8 +313,8 @@ class MonteCarloAgent:
         self.gamma = gamma
         self.episode_memory: list[tuple[tuple[int, int], int, float | None]] = []
         self.V: dict[tuple[int, int], float] = defaultdict(lambda: 0.0)
-        self.returns_sum: dict[tuple[int, int], float] = defaultdict(float)
-        self.returns_count: dict[tuple[int, int], int] = defaultdict(int)
+        self.pi: dict[tuple[int, int], dict[int, float]] = {}
+        self.count: dict[tuple[int, int], int] = defaultdict(int)
 
     def reset(self):
         """エピソードメモリをクリア"""
@@ -329,14 +329,36 @@ class MonteCarloAgent:
         self.episode_memory.append((state, action, reward))
 
     def eval(self):
-        """エピソードメモリを逆向きに辿ってVを更新"""
+        """エピソードメモリを逆向きに辿ってVを更新（インクリメンタル更新）"""
         G = 0.0
         for state, action, reward in reversed(self.episode_memory):
             r = reward if reward is not None else 0.0
             G = r + self.gamma * G
-            self.returns_sum[state] += G
-            self.returns_count[state] += 1
-            self.V[state] = self.returns_sum[state] / self.returns_count[state]
+            self.count[state] += 1
+            # V(s) ← V(s) + (1/n) * (G - V(s))
+            self.V[state] += (G - self.V[state]) / self.count[state]
+
+    def update(self):
+        """Vを更新し、greedy方策でpiを更新"""
+        # Vを更新
+        self.eval()
+
+        # Vからgreedy方策を計算してpiを更新
+        for state in self.env.states():
+            if state in self.env.walls or state == self.env.goal:
+                continue
+
+            action_values = {}
+            for action in self.env.get_actions():
+                self.env.state = state
+                next_state, reward, done = self.env.step(action)
+                r = reward if reward is not None else 0
+                action_values[action] = r + self.gamma * self.V[next_state]
+
+            best_action = max(action_values, key=lambda a: action_values[a])
+            self.pi[state] = {
+                a: 1.0 if a == best_action else 0.0 for a in self.env.get_actions()
+            }
 
 
 UP = GridWorld.UP
@@ -532,7 +554,7 @@ pi, V = value_iter(V, env, gamma=0.9, on_update=lambda pi, V: env.render_v_pi(V,
 env = GridWorld()
 agent = MonteCarloAgent(env, gamma=0.9)
 
-for episode in range(1000):
+for episode in range(10000):
     state = env.reset()
     agent.reset()
     while True:
@@ -548,41 +570,41 @@ for episode in range(1000):
 pi = greedy_policy(agent.V, env, gamma=0.9)
 env.render_v_pi(agent.V, pi)
 
-# =============================================================================
-# RandomGenGridWorld
-# =============================================================================
+# # =============================================================================
+# # RandomGenGridWorld
+# # =============================================================================
 
-# %%
-random_env = RandomGenGridWorld(seed=42)
-print(random_env.render())
+# # %%
+# random_env = RandomGenGridWorld(seed=42)
+# print(random_env.render())
 
-# %%
-# 方策反復法 (RandomGenGridWorld)
-V = defaultdict(lambda: 0)
-pi = defaultdict(lambda: {UP: 0.25, DOWN: 0.25, LEFT: 0.25, RIGHT: 0.25})
-policy_iter_count = [0]
-
-
-def on_policy_update(pi, V):
-    policy_iter_count[0] += 1
-    if policy_iter_count[0] % 3 == 0:
-        random_env.render_v_pi(V, pi)
+# # %%
+# # 方策反復法 (RandomGenGridWorld)
+# V = defaultdict(lambda: 0)
+# pi = defaultdict(lambda: {UP: 0.25, DOWN: 0.25, LEFT: 0.25, RIGHT: 0.25})
+# policy_iter_count = [0]
 
 
-pi, V = policy_iter(pi, V, random_env, gamma=0.9, on_policy_update=on_policy_update)
-random_env.render_v_pi(V, pi)  # 最終結果
-
-# %%
-# 価値反復法 (RandomGenGridWorld)
-V = defaultdict(lambda: 0)
-value_iter_count = [0]
+# def on_policy_update(pi, V):
+#     policy_iter_count[0] += 1
+#     if policy_iter_count[0] % 3 == 0:
+#         random_env.render_v_pi(V, pi)
 
 
-def on_value_update(pi, V):
-    value_iter_count[0] += 1
-    if value_iter_count[0] % 3 == 0:
-        random_env.render_v_pi(V, pi)
+# pi, V = policy_iter(pi, V, random_env, gamma=0.9, on_policy_update=on_policy_update)
+# random_env.render_v_pi(V, pi)  # 最終結果
+
+# # %%
+# # 価値反復法 (RandomGenGridWorld)
+# V = defaultdict(lambda: 0)
+# value_iter_count = [0]
 
 
-pi, V = value_iter(V, random_env, gamma=0.9, on_update=on_value_update)
-random_env.render_v_pi(V, pi)  # 最終結果
+# def on_value_update(pi, V):
+#     value_iter_count[0] += 1
+#     if value_iter_count[0] % 3 == 0:
+#         random_env.render_v_pi(V, pi)
+
+
+# pi, V = value_iter(V, random_env, gamma=0.9, on_update=on_value_update)
+# random_env.render_v_pi(V, pi)  # 最終結果
