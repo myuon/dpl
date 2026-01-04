@@ -5,7 +5,6 @@ GridWorld RL Visualization App
 """
 
 import copy
-import time
 from collections import defaultdict
 
 import matplotlib.pyplot as plt
@@ -326,55 +325,12 @@ if not history:
 # エピソード選択
 st.subheader("エピソード選択")
 
-# アニメーション状態の初期化
-if "animation_running" not in st.session_state:
-    st.session_state.animation_running = False
-if "animation_idx" not in st.session_state:
-    st.session_state.animation_idx = len(history) - 1
-
-col1, col2, col3 = st.columns([6, 1, 1])
-
-with col2:
-    if st.button("▶ 再生"):
-        st.session_state.animation_running = True
-        st.session_state.animation_idx = 0
-        st.rerun()
-
-with col3:
-    if st.button("⏹ 停止"):
-        st.session_state.animation_running = False
-        st.rerun()
-
-# アニメーション中はスライダーを無効化し、animation_idxを使用
-if st.session_state.animation_running:
-    with col1:
-        st.slider(
-            "エピソード",
-            min_value=0,
-            max_value=len(history) - 1,
-            value=st.session_state.animation_idx,
-            disabled=True,
-        )
-    episode_idx = st.session_state.animation_idx
-
-    # 次のフレームへ進む
-    time.sleep(0.3)
-    st.session_state.animation_idx += 1
-    if st.session_state.animation_idx >= len(history):
-        st.session_state.animation_running = False
-        st.session_state.animation_idx = len(history) - 1
-    st.rerun()
-else:
-    with col1:
-        episode_idx = st.slider(
-            "エピソード",
-            min_value=0,
-            max_value=len(history) - 1,
-            value=st.session_state.animation_idx,
-            key="episode_slider",
-        )
-        # スライダーの値をanimation_idxに同期
-        st.session_state.animation_idx = episode_idx
+episode_idx = st.slider(
+    "エピソード",
+    min_value=0,
+    max_value=len(history) - 1,
+    value=len(history) - 1,
+)
 
 # 現在のQ値
 current_Q = history[episode_idx]
