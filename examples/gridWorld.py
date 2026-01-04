@@ -300,6 +300,45 @@ class RandomGenGridWorld(GridWorld):
         plt.show()
 
 
+# =============================================================================
+# モンテカルロ法 (Monte Carlo)
+# =============================================================================
+
+
+class MonteCarloAgent:
+    """モンテカルロ法によるエージェント"""
+
+    def __init__(self, env: GridWorld, gamma: float = 0.9):
+        self.env = env
+        self.gamma = gamma
+        self.episode_memory: list[tuple[tuple[int, int], int, float | None]] = []
+        self.V: dict[tuple[int, int], float] = defaultdict(lambda: 0.0)
+        self.returns_sum: dict[tuple[int, int], float] = defaultdict(float)
+        self.returns_count: dict[tuple[int, int], int] = defaultdict(int)
+
+    def reset(self):
+        """エピソードメモリをクリア"""
+        self.episode_memory = []
+
+    def get_action(self, state: tuple[int, int]) -> int:
+        """ランダムに行動を選択"""
+        return np.random.choice(self.env.get_actions())
+
+    def add(self, state: tuple[int, int], action: int, reward: float | None):
+        """経験をエピソードメモリに追加"""
+        self.episode_memory.append((state, action, reward))
+
+    def eval(self):
+        """エピソードメモリを逆向きに辿ってVを更新"""
+        G = 0.0
+        for state, action, reward in reversed(self.episode_memory):
+            r = reward if reward is not None else 0.0
+            G = r + self.gamma * G
+            self.returns_sum[state] += G
+            self.returns_count[state] += 1
+            self.V[state] = self.returns_sum[state] / self.returns_count[state]
+
+
 UP = GridWorld.UP
 DOWN = GridWorld.DOWN
 LEFT = GridWorld.LEFT
@@ -487,6 +526,27 @@ pi, V = policy_iter(
 # 価値反復法
 V = defaultdict(lambda: 0)
 pi, V = value_iter(V, env, gamma=0.9, on_update=lambda pi, V: env.render_v_pi(V, pi))
+
+# %%
+# モンテカルロ法
+env = GridWorld()
+agent = MonteCarloAgent(env, gamma=0.9)
+
+for episode in range(1000):
+    state = env.reset()
+    agent.reset()
+    while True:
+        action = agent.get_action(state)
+        next_state, reward, done = env.step(action)
+        agent.add(state, action, reward)
+        if done:
+            agent.eval()
+            break
+        state = next_state
+
+# greedy方策を計算して表示
+pi = greedy_policy(agent.V, env, gamma=0.9)
+env.render_v_pi(agent.V, pi)
 
 # =============================================================================
 # RandomGenGridWorld
