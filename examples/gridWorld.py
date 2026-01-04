@@ -621,6 +621,69 @@ class QLearningAgent:
             }
 
 
+# =============================================================================
+# AgentTrainer
+# =============================================================================
+
+
+class AgentTrainer:
+    """エージェントの学習を行う汎用トレーナー
+
+    Hooks:
+    - on_episode_start(agent, env): エピソード開始時に呼ばれる
+    - on_step(agent, state, action, reward, next_state, done): env.step後に呼ばれる
+    - on_done(agent): エピソード終了時（done=True）に呼ばれる
+    - on_episode_end(agent, env, episode): エピソード終了後に呼ばれる
+    """
+
+    def __init__(
+        self,
+        env: GridWorld,
+        agent,
+        num_episodes: int = 1000,
+        on_episode_start=None,
+        on_step=None,
+        on_done=None,
+        on_episode_end=None,
+    ):
+        self.env = env
+        self.agent = agent
+        self.num_episodes = num_episodes
+        self.on_episode_start = on_episode_start
+        self.on_step = on_step
+        self.on_done = on_done
+        self.on_episode_end = on_episode_end
+
+    def train(self):
+        """学習を実行"""
+        for episode in range(self.num_episodes):
+            state = self.env.reset()
+
+            # エピソード開始時のhook
+            if self.on_episode_start:
+                self.on_episode_start(self.agent, self.env)
+
+            while True:
+                action = self.agent.get_action(state)
+                next_state, reward, done = self.env.step(action)
+
+                # ステップ後のhook
+                if self.on_step:
+                    self.on_step(self.agent, state, action, reward, next_state, done)
+
+                if done:
+                    # 終了時のhook
+                    if self.on_done:
+                        self.on_done(self.agent)
+                    break
+
+                state = next_state
+
+            # エピソード終了後のhook
+            if self.on_episode_end:
+                self.on_episode_end(self.agent, self.env, episode)
+
+
 UP = GridWorld.UP
 DOWN = GridWorld.DOWN
 LEFT = GridWorld.LEFT
@@ -814,21 +877,20 @@ pi, V = value_iter(V, env, gamma=0.9, on_update=lambda pi, V: env.render_v_pi(V,
 env = GridWorld()
 agent = MonteCarloAgent(env, gamma=0.9)
 
-for episode in range(1000):
-    state = env.reset()
-    agent.reset()
-    while True:
-        action = agent.get_action(state)
-        next_state, reward, done = env.step(action)
-        agent.add(state, action, reward)
-        if done:
-            agent.update()
-            break
-        state = next_state
-
-    # 10エピソードごとにQ(s,a)を可視化
-    if (episode + 1) % 100 == 0:
-        env.render_q(agent.Q)
+trainer = AgentTrainer(
+    env,
+    agent,
+    num_episodes=1000,
+    on_episode_start=lambda agent, env: agent.reset(),
+    on_step=lambda agent, state, action, reward, next_state, done: agent.add(
+        state, action, reward
+    ),
+    on_done=lambda agent: agent.update(),
+    on_episode_end=lambda agent, env, episode: env.render_q(agent.Q)
+    if (episode + 1) % 100 == 0
+    else None,
+)
+trainer.train()
 
 # Qから最適方策とV(s)を導出して表示
 V_from_Q = {s: max(agent.Q[(s, a)] for a in env.get_actions()) for s in env.states()}
@@ -845,20 +907,18 @@ env.render_v_pi(V_from_Q, pi_from_Q)
 env = GridWorld()
 td_agent = TdAgent(env, gamma=0.9)
 
-for episode in range(1000):
-    state = env.reset()
-    while True:
-        action = td_agent.get_action(state)
-        next_state, reward, done = env.step(action)
-        # 各ステップでQ値を更新
-        td_agent.eval(state, action, reward, next_state, done)
-        if done:
-            break
-        state = next_state
-
-    # 10エピソードごとにQ(s,a)を可視化
-    if (episode + 1) % 100 == 0:
-        env.render_q(td_agent.Q)
+trainer = AgentTrainer(
+    env,
+    td_agent,
+    num_episodes=1000,
+    on_step=lambda agent, state, action, reward, next_state, done: agent.eval(
+        state, action, reward, next_state, done
+    ),
+    on_episode_end=lambda agent, env, episode: env.render_q(agent.Q)
+    if (episode + 1) % 100 == 0
+    else None,
+)
+trainer.train()
 
 # Qから最適方策とV(s)を導出して表示
 td_agent.update_policy()
@@ -870,21 +930,18 @@ env.render_v_pi(V_from_Q, td_agent.pi)
 env = GridWorld()
 q_agent = QLearningAgent(env, gamma=0.9)
 
-for episode in range(1000):
-    state = env.reset()
-    while True:
-        # 行動方策b（epsilon-greedy）でアクションを選択
-        action = q_agent.get_action(state)
-        next_state, reward, done = env.step(action)
-        # 各ステップでQ値と方策を更新
-        q_agent.update(state, action, reward, next_state, done)
-        if done:
-            break
-        state = next_state
-
-    # 10エピソードごとにQ(s,a)を可視化
-    if (episode + 1) % 100 == 0:
-        env.render_q(q_agent.Q)
+trainer = AgentTrainer(
+    env,
+    q_agent,
+    num_episodes=1000,
+    on_step=lambda agent, state, action, reward, next_state, done: agent.update(
+        state, action, reward, next_state, done
+    ),
+    on_episode_end=lambda agent, env, episode: env.render_q(agent.Q)
+    if (episode + 1) % 100 == 0
+    else None,
+)
+trainer.train()
 
 # 最終結果を表示
 V_from_Q = {s: max(q_agent.Q[(s, a)] for a in env.get_actions()) for s in env.states()}
