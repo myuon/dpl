@@ -82,6 +82,44 @@ S . . . . . .
 . . . . . . .
 """
 
+
+# %% Map Rotation
+def rotate_map(ascii_map: str, times: int = 1) -> str:
+    """マップを時計回りに90度×times回転させる
+
+    Args:
+        ascii_map: ASCII形式のマップ文字列
+        times: 回転回数（1=90度, 2=180度, 3=270度）
+
+    Returns:
+        回転後のASCII形式のマップ文字列
+    """
+    lines = [line.strip() for line in ascii_map.strip().split("\n")]
+    grid = [line.split() for line in lines]
+
+    for _ in range(times % 4):
+        # 時計回りに90度回転: 転置してから各行を反転
+        height = len(grid)
+        width = len(grid[0])
+        rotated = [[grid[height - 1 - j][i] for j in range(height)] for i in range(width)]
+        grid = rotated
+
+    # ASCII文字列に変換
+    return "\n".join(" ".join(row) for row in grid)
+
+
+# 回転マップのテスト
+print("=== Original Map ===")
+print(MAP_ASCII.strip())
+print("\n=== Rotated 90° ===")
+print(rotate_map(MAP_ASCII, 1))
+print("\n=== Rotated 180° ===")
+print(rotate_map(MAP_ASCII, 2))
+print("\n=== Rotated 270° ===")
+print(rotate_map(MAP_ASCII, 3))
+print()
+
+
 start, goal, obstacles, width, height = parse_grid_map(MAP_ASCII)
 print(f"Start: {start}")
 print(f"Goal: {goal}")
@@ -302,6 +340,52 @@ class GridWorld(Env):
         for row in grid:
             print("|" + " ".join(row) + "|")
         print("-" * (self.width * 2 + 1))
+
+
+# %% RotatedMapGridWorld
+class RotatedMapGridWorld(GridWorld):
+    """リセット時にマップを90度/180度/270度回転させるGridWorld
+
+    評価用として、回転したマップへの汎化性能をテストするために使用。
+    """
+
+    def __init__(
+        self,
+        base_map: str = MAP_ASCII,
+        max_steps: int = 200,
+        max_visit_count: int = 30,
+    ):
+        self._base_map = base_map
+        # 回転バリエーション: 90度, 180度, 270度
+        self._rotations = [1, 2, 3]
+        self._current_rotation = 0
+
+        # 初期マップ（90度回転）
+        initial_map = rotate_map(base_map, self._rotations[0])
+        super().__init__(
+            ascii_map=initial_map,
+            max_steps=max_steps,
+            random_start=False,
+            corner_start=True,  # 四隅からスタート
+            max_visit_count=max_visit_count,
+        )
+
+    def reset(self) -> np.ndarray:
+        """リセット時にランダムな回転を適用"""
+        # ランダムに回転を選択
+        rotation = self._rotations[np.random.randint(len(self._rotations))]
+        rotated_map = rotate_map(self._base_map, rotation)
+        start, goal, obstacles, width, height = parse_grid_map(rotated_map)
+
+        # 環境パラメータを更新
+        self.width = width
+        self.height = height
+        self.obstacles = obstacles
+        self.goal = goal
+        self.start = start
+
+        # 親クラスのリセットを呼び出す
+        return super().reset()
 
 
 # %% FrameStackEnv Wrapper
@@ -560,39 +644,21 @@ class DQNAgent(BaseAgent):
 def evaluate_agent(
     agent: DQNAgent,
     env: GridWorld | FrameStackEnv,
-    start_positions: list[tuple[int, int]] | None = None,
+    num_episodes: int = 6,
 ):
     """学習済みエージェントを評価し、訪問したセルのポリシーを可視化
 
     Args:
         agent: 学習済みエージェント
         env: 環境（GridWorld or FrameStackEnv）
-        start_positions: スタート位置のリスト。Noneの場合は環境のデフォルト動作
+        num_episodes: 評価エピソード数
     """
     # ベース環境を取得
     base_env = env.env if isinstance(env, FrameStackEnv) else env
 
-    num_episodes = len(start_positions) if start_positions else 3
-
     for episode in range(num_episodes):
-        # スタート位置を設定
-        if start_positions:
-            start_pos = start_positions[episode]
-            # 環境をリセットしてから手動で位置を設定
-            env.reset()
-            base_env.agent_pos = list(start_pos)
-            base_env.steps = 0
-            # FrameStackの場合はフレームバッファを再初期化
-            if isinstance(env, FrameStackEnv):
-                obs = base_env._get_state()
-                env.frames.clear()
-                for _ in range(env.k):
-                    env.frames.append(obs)
-                observation = env._get_stacked()
-            else:
-                observation = base_env._get_state()
-        else:
-            observation = env.reset()
+        # 環境をリセット（corner_start=Trueなら四隅からスタート）
+        observation = env.reset()
 
         total_reward = 0.0
         steps = 0
@@ -736,7 +802,7 @@ print("Training DQN Agent on GridWorld...")
 
 # ベース環境を作成
 base_env = GridWorld(corner_start=True)  # トレーニングは四隅からスタート
-base_eval_env = GridWorld(random_start=True)  # 評価はランダムスタート（汎化性能を確認）
+base_eval_env = RotatedMapGridWorld()  # 評価は回転マップ（90°/180°/270°）
 
 # FrameStackでラップ（FRAME_STACK > 1 の場合）
 if FRAME_STACK > 1:
@@ -1151,53 +1217,4 @@ plot_value_and_policy(agent, base_env)
 
 # %% Evaluation
 print("\nEvaluating trained agent...")
-
-
-# スタート位置を生成: y=0から2つ、y=6から2つ、その他から2つ
-def generate_start_positions(env: GridWorld) -> list[tuple[int, int]]:
-    """評価用のスタート位置を生成"""
-    obstacles = env.obstacles
-    goal = env.goal
-
-    # 各行ごとに有効な位置を収集
-    row_0_positions = [
-        (x, 0) for x in range(env.width) if (x, 0) not in obstacles and (x, 0) != goal
-    ]
-    row_6_positions = [
-        (x, 6) for x in range(env.width) if (x, 6) not in obstacles and (x, 6) != goal
-    ]
-    other_positions = [
-        (x, y)
-        for y in range(1, 6)  # y=1~5
-        for x in range(env.width)
-        if (x, y) not in obstacles and (x, y) != goal
-    ]
-
-    # ランダムに選択
-    np.random.seed(42)  # 再現性のため
-    positions = []
-    positions.extend(
-        [
-            row_0_positions[i]
-            for i in np.random.choice(len(row_0_positions), 2, replace=False)
-        ]
-    )
-    positions.extend(
-        [
-            row_6_positions[i]
-            for i in np.random.choice(len(row_6_positions), 2, replace=False)
-        ]
-    )
-    positions.extend(
-        [
-            other_positions[i]
-            for i in np.random.choice(len(other_positions), 2, replace=False)
-        ]
-    )
-
-    return positions
-
-
-start_positions = generate_start_positions(base_env)
-print(f"Start positions: {start_positions}")
-evaluate_agent(agent, eval_env, start_positions=start_positions)
+evaluate_agent(agent, eval_env, num_episodes=6)
