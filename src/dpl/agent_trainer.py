@@ -69,12 +69,13 @@ class AgentTrainer:
 
             # 評価
             if (episode + 1) % self.eval_interval == 0:
-                eval_return, success_rate, avg_steps = self.evaluate(n=self.eval_n)
+                eval_return, success_rate, avg_steps, avg_success, avg_fail = self.evaluate(n=self.eval_n)
                 eval_returns.append((episode + 1, eval_return))
                 print(
                     f"  → Eval (n={self.eval_n}): Return={eval_return:.2f}, "
                     f"Success={success_rate*100:.0f}% ({int(success_rate*self.eval_n)}/{self.eval_n}), "
-                    f"AvgSteps={avg_steps:.1f}"
+                    f"AvgSteps={avg_steps:.1f}, "
+                    f"ReturnSuccess={avg_success:.2f}, ReturnFail={avg_fail:.2f}"
                 )
 
         return TrainResult(episode_rewards, episode_losses, eval_returns)
@@ -123,17 +124,20 @@ class AgentTrainer:
             f"Epsilon = {epsilon:.3f}"
         )
 
-    def evaluate(self, n: int = 20) -> tuple[float, float, float]:
+    def evaluate(self, n: int = 20) -> tuple[float, float, float, float, float]:
         """評価を実行（ε=0で複数エピソード）
 
         Returns:
-            (avg_return, success_rate, avg_steps_to_goal)
+            (avg_return, success_rate, avg_steps_to_goal, avg_return_success, avg_return_fail)
             - avg_return: 平均リターン
             - success_rate: ゴール到達率 (0.0 ~ 1.0)
             - avg_steps_to_goal: ゴール到達時の平均ステップ数（到達なしの場合は0）
+            - avg_return_success: 成功時の平均リターン（成功なしの場合は0）
+            - avg_return_fail: 失敗時の平均リターン（失敗なしの場合は0）
         """
         returns = []
-        successes = 0
+        returns_success = []
+        returns_fail = []
         steps_to_goal = []
 
         for _ in range(n):
@@ -150,11 +154,15 @@ class AgentTrainer:
 
             returns.append(total)
             if terminated:  # ゴール到達
-                successes += 1
+                returns_success.append(total)
                 steps_to_goal.append(steps)
+            else:
+                returns_fail.append(total)
 
         avg_return = float(np.mean(returns))
-        success_rate = successes / n
+        success_rate = len(returns_success) / n
         avg_steps = float(np.mean(steps_to_goal)) if steps_to_goal else 0.0
+        avg_return_success = float(np.mean(returns_success)) if returns_success else 0.0
+        avg_return_fail = float(np.mean(returns_fail)) if returns_fail else 0.0
 
-        return avg_return, success_rate, avg_steps
+        return avg_return, success_rate, avg_steps, avg_return_success, avg_return_fail
