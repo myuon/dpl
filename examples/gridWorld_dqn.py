@@ -21,7 +21,7 @@ from dpl.agent import ReplayBuffer, BaseAgent
 OBSERVATION_MODE = "local"
 
 # フレームスタック数（過去K個の観測を連結して状態とする）
-FRAME_STACK = 8
+FRAME_STACK = 4
 
 # Dueling DQN: True=Dueling DQN, False=通常のDouble DQN
 USE_DUELING = True
@@ -104,7 +104,9 @@ def rotate_map(ascii_map: str, times: int = 1) -> str:
         # 時計回りに90度回転: 転置してから各行を反転
         height = len(grid)
         width = len(grid[0])
-        rotated = [[grid[height - 1 - j][i] for j in range(height)] for i in range(width)]
+        rotated = [
+            [grid[height - 1 - j][i] for j in range(height)] for i in range(width)
+        ]
         grid = rotated
 
     # ASCII文字列に変換
@@ -1280,17 +1282,18 @@ def plot_value_and_policy(agent: DQNAgent, env: GridWorld):
     plt.show()
 
 
-def plot_dueling_advantage(agent: DQNAgent, env: GridWorld):
-    """Dueling DQN専用: max A(s,a) のheatmapを可視化
+def plot_dueling_analysis(agent: DQNAgent, env: GridWorld):
+    """Dueling DQN専用: A-centered, Gap, V×Gapを横並びで可視化
 
-    各セルで最大のAdvantage値を色で表示。
-    Advantageが高い状態 = アクション選択が重要な状態
+    左: A(s,a) - mean(A) を4方向の三角形で表示
+    中央: gap(s) = max A - second max A を表示
+    右: V(s) × Gap の重ね合わせ（色=V, 明度=Gap）
     """
     if not USE_DUELING:
-        print("Dueling DQNが無効のため、Advantage可視化をスキップします")
+        print("Dueling DQNが無効のため、可視化をスキップします")
         return
 
-    from matplotlib.patches import Rectangle
+    from matplotlib.patches import Polygon, Rectangle
     import matplotlib.colors as mcolors
 
     width = env.width
@@ -1304,90 +1307,172 @@ def plot_dueling_advantage(agent: DQNAgent, env: GridWorld):
         print("QNetがDuelingQNetではないため、スキップします")
         return
 
-    # 各セルのAdvantage値を計算
-    max_advantages = np.zeros((height, width))
-    all_advantages = np.zeros((height, width, 4))
+    # 各セルのValue, Advantage, Gap値を計算
+    value_values = np.zeros((height, width))
+    adv_values = np.zeros((height, width, 4))
+    gap_values = np.zeros((height, width))
 
     for y in range(height):
         for x in range(width):
             state = _get_state_for_pos(x, y, env)
             state_var = Variable(state.reshape(1, -1))
-            _, adv = agent.qnet.get_value_and_advantage(state_var)
-            all_advantages[y, x] = adv[0]
-            max_advantages[y, x] = np.max(adv[0])
+            v, adv = agent.qnet.get_value_and_advantage(state_var)
+            value_values[y, x] = v[0, 0]
+            # A(s,a) - mean(A) を計算
+            adv_centered = adv[0] - np.mean(adv[0])
+            adv_values[y, x] = adv_centered
+            # gap = max - second_max
+            sorted_adv = np.sort(adv_centered)[::-1]
+            gap_values[y, x] = sorted_adv[0] - sorted_adv[1]
 
-    # 障害物を除いた値の範囲
-    valid_mask = np.array(
-        [[(x, y) not in obstacles for x in range(width)] for y in range(height)]
-    )
-    valid_max_adv = max_advantages[valid_mask]
-    a_min = np.min(valid_max_adv)
-    a_max = np.max(valid_max_adv)
-    norm = mcolors.Normalize(vmin=a_min, vmax=a_max)
-    cmap = plt.get_cmap("YlOrRd")
+    # Figure作成（3つ横並び）
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(24, 7))
 
-    _, ax = plt.subplots(figsize=(8, 8))
+    # === 左: A-centered 4方向三角形 ===
+    adv_min = np.min(adv_values)
+    adv_max = np.max(adv_values)
+    abs_max = max(abs(adv_min), abs(adv_max))
+    adv_norm = mcolors.TwoSlopeNorm(vmin=-abs_max, vcenter=0, vmax=abs_max)
+    adv_cmap = plt.get_cmap("RdBu_r")
+
+    for y in range(height):
+        for x in range(width):
+            cx, cy = x, y
+            # 4つの三角形
+            top_tri = [(cx - 0.5, cy - 0.5), (cx + 0.5, cy - 0.5), (cx, cy)]
+            bottom_tri = [(cx - 0.5, cy + 0.5), (cx + 0.5, cy + 0.5), (cx, cy)]
+            left_tri = [(cx - 0.5, cy - 0.5), (cx - 0.5, cy + 0.5), (cx, cy)]
+            right_tri = [(cx + 0.5, cy - 0.5), (cx + 0.5, cy + 0.5), (cx, cy)]
+            triangles = [top_tri, bottom_tri, left_tri, right_tri]
+            label_offsets = [(0, -0.25), (0, 0.25), (-0.25, 0), (0.25, 0)]
+
+            if (x, y) in obstacles:
+                for tri in triangles:
+                    poly = Polygon(tri, facecolor="gray", edgecolor="black", linewidth=0.5)
+                    ax1.add_patch(poly)
+                ax1.text(cx, cy, "#", ha="center", va="center", fontsize=14, fontweight="bold")
+            else:
+                for i, (tri, offset) in enumerate(zip(triangles, label_offsets)):
+                    adv_val = adv_values[y, x, i]
+                    color = adv_cmap(adv_norm(adv_val))
+                    poly = Polygon(tri, facecolor=color, edgecolor="black", linewidth=0.5)
+                    ax1.add_patch(poly)
+                    ax1.text(
+                        cx + offset[0], cy + offset[1], f"{adv_val:.2f}",
+                        ha="center", va="center", fontsize=6, color="black"
+                    )
+
+    # スタートとゴール（左）
+    ax1.text(start[0], start[1], "S", ha="center", va="center", fontsize=10, color="red",
+             bbox=dict(boxstyle="circle", facecolor="white", edgecolor="red"))
+    ax1.text(goal[0], goal[1], "G", ha="center", va="center", fontsize=10, color="green",
+             bbox=dict(boxstyle="circle", facecolor="white", edgecolor="green"))
+
+    for i in range(height + 1):
+        ax1.axhline(i - 0.5, color="black", linewidth=1)
+    for i in range(width + 1):
+        ax1.axvline(i - 0.5, color="black", linewidth=1)
+
+    ax1.set_xlim(-0.5, width - 0.5)
+    ax1.set_ylim(height - 0.5, -0.5)
+    ax1.set_aspect("equal")
+    ax1.set_xlabel("x")
+    ax1.set_ylabel("y")
+    ax1.set_title("A(s, a) - mean(A)")
+
+    sm1 = plt.cm.ScalarMappable(cmap=adv_cmap, norm=adv_norm)
+    sm1.set_array([])
+    plt.colorbar(sm1, ax=ax1, label="Centered Advantage")
+
+    # === 中央: Gap ===
+    gap_min = np.min(gap_values)
+    gap_max = np.max(gap_values)
+    gap_cmap = plt.get_cmap("YlOrRd")
 
     for y in range(height):
         for x in range(width):
             if (x, y) in obstacles:
-                color = "gray"
+                rect = Rectangle((x - 0.5, y - 0.5), 1, 1, facecolor="gray", edgecolor="black")
+                ax2.add_patch(rect)
+                ax2.text(x, y, "#", ha="center", va="center", fontsize=14, fontweight="bold")
             else:
-                color = cmap(norm(max_advantages[y, x]))
+                gap_val = gap_values[y, x]
+                normalized = (gap_val - gap_min) / (gap_max - gap_min + 1e-8)
+                color = gap_cmap(normalized)
+                rect = Rectangle((x - 0.5, y - 0.5), 1, 1, facecolor=color, edgecolor="black")
+                ax2.add_patch(rect)
+                ax2.text(x, y, f"{gap_val:.2f}", ha="center", va="center", fontsize=8, color="black")
 
-            rect = Rectangle(
-                (x - 0.5, y - 0.5),
-                1,
-                1,
-                facecolor=color,
-                edgecolor="black",
-                linewidth=0.5,
-            )
-            ax.add_patch(rect)
+    # スタートとゴール（中央）
+    ax2.text(start[0], start[1], "S", ha="center", va="center", fontsize=10, color="red",
+             bbox=dict(boxstyle="circle", facecolor="white", edgecolor="red"))
+    ax2.text(goal[0], goal[1], "G", ha="center", va="center", fontsize=10, color="green",
+             bbox=dict(boxstyle="circle", facecolor="white", edgecolor="green"))
 
-            if (x, y) not in obstacles:
-                ax.text(
-                    x,
-                    y,
-                    f"{max_advantages[y, x]:.2f}",
-                    ha="center",
-                    va="center",
-                    fontsize=7,
-                    color="black",
-                )
+    ax2.set_xlim(-0.5, width - 0.5)
+    ax2.set_ylim(height - 0.5, -0.5)
+    ax2.set_aspect("equal")
+    ax2.set_xlabel("x")
+    ax2.set_ylabel("y")
+    ax2.set_title("Action Gap (max A - second max A)")
 
-    # スタートとゴール
-    ax.text(
-        start[0],
-        start[1],
-        "S",
-        ha="center",
-        va="center",
-        fontsize=10,
-        color="red",
-        bbox=dict(boxstyle="circle", facecolor="white", edgecolor="red"),
-    )
-    ax.text(
-        goal[0],
-        goal[1],
-        "G",
-        ha="center",
-        va="center",
-        fontsize=10,
-        color="green",
-        bbox=dict(boxstyle="circle", facecolor="white", edgecolor="green"),
-    )
+    sm2 = plt.cm.ScalarMappable(cmap=gap_cmap, norm=mcolors.Normalize(vmin=gap_min, vmax=gap_max))
+    sm2.set_array([])
+    plt.colorbar(sm2, ax=ax2, label="Gap (action confidence)")
 
-    ax.set_xlim(-0.5, width - 0.5)
-    ax.set_ylim(height - 0.5, -0.5)
-    ax.set_aspect("equal")
-    ax.set_xlabel("x")
-    ax.set_ylabel("y")
-    ax.set_title("Dueling DQN: max_a A(s, a) (Advantage Heatmap)")
+    # === 右: V × Gap（色=V, 明度=Gap）===
+    v_min = np.min(value_values)
+    v_max = np.max(value_values)
+    v_cmap = plt.get_cmap("RdYlGn")  # 赤(低V) → 緑(高V)
 
-    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
-    sm.set_array([])
-    plt.colorbar(sm, ax=ax, label="max A(s,a)")
+    # Gap を 0-1 に正規化（明度用）
+    gap_normalized = (gap_values - gap_min) / (gap_max - gap_min + 1e-8)
+
+    for y in range(height):
+        for x in range(width):
+            if (x, y) in obstacles:
+                rect = Rectangle((x - 0.5, y - 0.5), 1, 1, facecolor="gray", edgecolor="black")
+                ax3.add_patch(rect)
+                ax3.text(x, y, "#", ha="center", va="center", fontsize=14, fontweight="bold")
+            else:
+                # V(s) で色を決定
+                v_val = value_values[y, x]
+                v_normalized = (v_val - v_min) / (v_max - v_min + 1e-8)
+                base_color = np.array(v_cmap(v_normalized)[:3])
+
+                # Gap で明度を調整（gap大 → 鮮やか、gap小 → 白っぽく）
+                gap_norm = gap_normalized[y, x]
+                # 明度調整: 白(1,1,1)との補間（gap小→白寄り、gap大→元の色）
+                alpha_factor = 0.3 + 0.7 * gap_norm  # 0.3〜1.0
+                adjusted_color = base_color * alpha_factor + np.array([1, 1, 1]) * (1 - alpha_factor)
+
+                rect = Rectangle((x - 0.5, y - 0.5), 1, 1, facecolor=adjusted_color, edgecolor="black")
+                ax3.add_patch(rect)
+
+                # V値とGap値を表示
+                ax3.text(x, y - 0.15, f"V:{v_val:.1f}", ha="center", va="center", fontsize=6, color="black")
+                ax3.text(x, y + 0.15, f"G:{gap_values[y, x]:.2f}", ha="center", va="center", fontsize=6, color="black")
+
+    # スタートとゴール（右）
+    ax3.text(start[0], start[1], "S", ha="center", va="center", fontsize=10, color="red",
+             bbox=dict(boxstyle="circle", facecolor="white", edgecolor="red"))
+    ax3.text(goal[0], goal[1], "G", ha="center", va="center", fontsize=10, color="green",
+             bbox=dict(boxstyle="circle", facecolor="white", edgecolor="green"))
+
+    ax3.set_xlim(-0.5, width - 0.5)
+    ax3.set_ylim(height - 0.5, -0.5)
+    ax3.set_aspect("equal")
+    ax3.set_xlabel("x")
+    ax3.set_ylabel("y")
+    ax3.set_title("V(s) × Gap (color=V, brightness=Gap)")
+
+    # カラーバー（V用）
+    sm3 = plt.cm.ScalarMappable(cmap=v_cmap, norm=mcolors.Normalize(vmin=v_min, vmax=v_max))
+    sm3.set_array([])
+    cbar3 = plt.colorbar(sm3, ax=ax3, label="V(s)")
+    # 明度の凡例をタイトルに追加
+    ax3.text(0.5, -0.12, "Brightness: Gap (bright=important decision)", transform=ax3.transAxes,
+             ha="center", fontsize=9, style="italic")
 
     plt.tight_layout()
     plt.show()
@@ -1397,8 +1482,8 @@ print("\nValue and Policy:")
 plot_value_and_policy(agent, base_env)
 
 if USE_DUELING:
-    print("\nDueling DQN: Max Advantage Heatmap:")
-    plot_dueling_advantage(agent, base_env)
+    print("\nDueling DQN: Advantage & Gap Analysis:")
+    plot_dueling_analysis(agent, base_env)
 
 
 # %% Evaluation
