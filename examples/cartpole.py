@@ -9,6 +9,20 @@ from dpl import Variable
 from dpl.optimizers import Adam
 
 
+def huber_loss(pred: Variable, target: Variable, delta: float = 1.0) -> Variable:
+    """Huber loss: MSEより外れ値に強い
+
+    |error| <= delta: 0.5 * error^2
+    |error| > delta:  delta * (|error| - 0.5 * delta)
+    """
+    error = pred - target
+    abs_error = Variable(np.abs(error.data_required))
+    quadratic = Variable(np.minimum(abs_error.data_required, delta))
+    linear = abs_error - quadratic
+    loss = 0.5 * quadratic * quadratic + delta * linear
+    return F.sum(loss) / Variable(np.array(len(pred.data_required), dtype=np.float32))
+
+
 class QNet(L.Sequential):
     """CartPole用のQ-Network
 
@@ -55,10 +69,13 @@ class ReplayBuffer:
 
 
 class DQNAgent:
-    """DQN Agent
+    """Double DQN Agent
 
     - Experience Replay: 過去の経験をバッファに保存し、ミニバッチで学習
     - Target Network: 安定した学習のために定期的にコピー
+    - Double DQN: action選択はqnet、Q値評価はtarget_qnetで行う
+    - Huber loss: MSEより外れ値に強い損失関数
+    - Gradient clipping: 勾配爆発を防ぐ
     - epsilon-greedy探索
     """
 
@@ -70,11 +87,12 @@ class DQNAgent:
         epsilon: float = 1.0,
         epsilon_min: float = 0.01,
         epsilon_decay: float = 0.995,
-        lr: float = 0.001,
+        lr: float = 1e-4,  # 安定化のため小さめに
         batch_size: int = 64,
         buffer_size: int = 10000,
         target_update_freq: int = 10,
         hidden_size: int = 128,
+        grad_clip: float = 10.0,  # gradient clipping (global norm)
     ):
         self.state_size = state_size
         self.action_size = action_size
@@ -84,6 +102,7 @@ class DQNAgent:
         self.epsilon_decay = epsilon_decay
         self.batch_size = batch_size
         self.target_update_freq = target_update_freq
+        self.grad_clip = grad_clip
 
         # Q-Network
         self.qnet = QNet(state_size, action_size, hidden_size)
@@ -114,6 +133,28 @@ class DQNAgent:
                 target_layer.W.data = main_layer.W.data.copy()
                 if main_layer.b is not None:
                     target_layer.b.data = main_layer.b.data.copy()
+
+    def _clip_grads(self):
+        """Gradient clipping (global norm)"""
+        # 全パラメータの勾配を集める
+        grads = []
+        for param in self.qnet.params():
+            if param.grad is not None:
+                grads.append(param.grad.data_required.flatten())
+
+        if not grads:
+            return
+
+        # Global normを計算
+        all_grads = np.concatenate(grads)
+        global_norm = np.sqrt(np.sum(all_grads ** 2))
+
+        # Clipping
+        if global_norm > self.grad_clip:
+            scale = self.grad_clip / global_norm
+            for param in self.qnet.params():
+                if param.grad is not None:
+                    param.grad.data = param.grad.data_required * scale
 
     def get_action(self, state: np.ndarray) -> int:
         """epsilon-greedy戦略でアクションを選択"""
@@ -151,10 +192,17 @@ class DQNAgent:
         # バッファからサンプリング
         states, actions, rewards, next_states, dones = self.buffer.sample(self.batch_size)
 
-        # Target Q値を計算（勾配なし）
+        # Double DQN: action選択はqnet、Q値評価はtarget_qnetで行う
         next_states_var = Variable(next_states)
-        next_q_values = self.target_qnet(next_states_var).data_required  # (batch, action_size)
-        max_next_q = np.max(next_q_values, axis=1)  # (batch,)
+
+        # メインネットワークでaction選択
+        next_q_main = self.qnet(next_states_var).data_required  # (batch, action_size)
+        best_actions = np.argmax(next_q_main, axis=1)  # (batch,)
+
+        # ターゲットネットワークでQ値評価
+        next_q_target = self.target_qnet(next_states_var).data_required  # (batch, action_size)
+        max_next_q = next_q_target[np.arange(len(best_actions)), best_actions]  # (batch,)
+
         targets = rewards + self.gamma * max_next_q * (1 - dones)  # (batch,)
 
         # 現在のQ値を計算（勾配あり）
@@ -166,13 +214,17 @@ class DQNAgent:
         action_masks = np.eye(self.action_size)[actions]  # (batch, action_size)
         current_q = F.sum(q_values * Variable(action_masks.astype(np.float32)), axis=1)  # (batch,)
 
-        # MSE損失
+        # Huber loss（MSEより外れ値に強い）
         targets_var = Variable(targets.astype(np.float32))
-        loss = F.mean_squared_error(current_q, targets_var)
+        loss = huber_loss(current_q, targets_var)
 
         # 勾配をクリアして逆伝播
         self.qnet.cleargrads()
         loss.backward()
+
+        # Gradient clipping (global norm)
+        self._clip_grads()
+
         self.optimizer.update()
 
         # Target networkを定期的に更新
@@ -180,11 +232,12 @@ class DQNAgent:
         if self.learn_step % self.target_update_freq == 0:
             self._sync_target()
 
-        # epsilon減衰
+        return float(loss.data_required)
+
+    def decay_epsilon(self):
+        """エピソード終了時にepsilonを減衰"""
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
-
-        return float(loss.data_required)
 
 
 def train_dqn(num_episodes: int = 500, render: bool = False, eval_interval: int = 100):
@@ -202,6 +255,7 @@ def train_dqn(num_episodes: int = 500, render: bool = False, eval_interval: int 
     episode_rewards = []
     episode_losses = []
     eval_returns = []  # (episode, eval_return) のリスト
+    total_steps = 0  # 総ステップ数
 
     for episode in range(num_episodes):
         observation, _ = env.reset()
@@ -216,16 +270,21 @@ def train_dqn(num_episodes: int = 500, render: bool = False, eval_interval: int 
             # 経験を保存
             agent.store(observation, action, reward, next_observation, done)
 
-            # Q-Networkを更新
-            loss = agent.update()
-            if loss is not None:
-                losses.append(loss)
+            # Q-Networkを更新（4ステップに1回、安定化のため）
+            total_steps += 1
+            if total_steps % 4 == 0:
+                loss = agent.update()
+                if loss is not None:
+                    losses.append(loss)
 
             total_reward += reward
             observation = next_observation
 
             if done:
                 break
+
+        # エピソード終了時にepsilonを減衰
+        agent.decay_epsilon()
 
         episode_rewards.append(total_reward)
         avg_loss = np.mean(losses) if losses else 0
