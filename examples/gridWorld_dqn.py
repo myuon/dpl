@@ -16,7 +16,7 @@ from dpl.agent import ReplayBuffer, BaseAgent
 # %% Feature Toggle
 # 観測モード: "onehot" または "local"
 # - onehot: one-hotエンコーディング (width * height次元)
-# - local: 局所視野 (3x3の壁情報9次元 + 正規化座標2次元 = 11次元)
+# - local: 局所視野 (3x3の壁情報9次元 + ゴールへの正規化方向ベクトル2次元 = 11次元)
 OBSERVATION_MODE = "local"
 
 
@@ -168,7 +168,7 @@ class GridWorld:
         return state
 
     def _get_state_local(self) -> np.ndarray:
-        """局所視野: 3x3の壁情報 + 正規化座標"""
+        """局所視野: 3x3の壁情報 + ゴールへの正規化方向ベクトル"""
         x, y = self.agent_pos
 
         # 3x3の壁情報（障害物または範囲外なら1、通行可能なら0）
@@ -184,11 +184,16 @@ class GridWorld:
                 else:
                     local_view.append(0.0)  # 通行可能
 
-        # 正規化座標
-        norm_x = x / (self.width - 1)
-        norm_y = y / (self.height - 1)
+        # ゴールへの方向ベクトル（正規化）
+        gx, gy = self.goal
+        dir_x = gx - x
+        dir_y = gy - y
+        dist = np.sqrt(dir_x**2 + dir_y**2)
+        if dist > 0:
+            dir_x /= dist
+            dir_y /= dist
 
-        state = np.array(local_view + [norm_x, norm_y], dtype=np.float32)
+        state = np.array(local_view + [dir_x, dir_y], dtype=np.float32)
         return state
 
     def step(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict]:
@@ -514,7 +519,7 @@ trainer = AgentTrainer(
     env=env,
     eval_env=eval_env,
     agent=agent,
-    num_episodes=500,
+    num_episodes=2500,
     eval_interval=50,
 )
 
@@ -568,10 +573,15 @@ def _get_state_for_pos(x: int, y: int, env: GridWorld) -> np.ndarray:
                     local_view.append(1.0)
                 else:
                     local_view.append(0.0)
-        # 正規化座標
-        norm_x = x / (env.width - 1)
-        norm_y = y / (env.height - 1)
-        return np.array(local_view + [norm_x, norm_y], dtype=np.float32)
+        # ゴールへの方向ベクトル（正規化）
+        gx, gy = env.goal
+        dir_x = gx - x
+        dir_y = gy - y
+        dist = np.sqrt(dir_x**2 + dir_y**2)
+        if dist > 0:
+            dir_x /= dist
+            dir_y /= dist
+        return np.array(local_view + [dir_x, dir_y], dtype=np.float32)
 
 
 # %% Q-Value Heatmap
