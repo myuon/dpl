@@ -612,6 +612,123 @@ class QLearningAgent:
 
 
 # =============================================================================
+# QNet-learning (NN-based Q-learning)
+# =============================================================================
+
+import dpl.layers as L
+import dpl.functions as F
+from dpl import Variable
+from dpl.optimizers import Adam
+
+
+class QNetLearningAgent:
+    """ニューラルネットワークを使ったQ-learningエージェント
+
+    - Q(s, a)をNNで近似: state -> [Q(s, a) for all a]
+    - 行動選択: epsilon-greedy（探索用）
+    - 目標方策: Qからgreedyに導出
+    """
+
+    def __init__(
+        self,
+        env: GridWorld,
+        gamma: float = 0.9,
+        epsilon: float = 0.1,
+        lr: float = 0.01,
+        hidden_size: int = 32,
+    ):
+        self.env = env
+        self.gamma = gamma
+        self.epsilon = epsilon
+
+        # 入力: 状態(y, x)を正規化した2次元ベクトル
+        # 出力: 各アクションのQ値（4次元）
+        n_actions = len(env.get_actions())
+        self.qnet = L.Sequential(
+            L.Linear(hidden_size),
+            F.relu,
+            L.Linear(n_actions),
+        )
+
+        # Optimizer
+        self.optimizer = Adam(lr=lr).setup(self.qnet)
+
+    def _state_to_input(self, state: tuple[int, int]) -> Variable:
+        """状態を正規化した入力ベクトルに変換"""
+        y, x = state
+        # 正規化: [0, 1] の範囲に
+        normalized = np.array(
+            [[y / (self.env.height - 1), x / (self.env.width - 1)]], dtype=np.float32
+        )
+        return Variable(normalized)
+
+    def _get_q_values(self, state: tuple[int, int]):
+        """状態から全アクションのQ値を取得"""
+        x = self._state_to_input(state)
+        q_values = self.qnet(x)
+        return q_values.data_required[0]  # (n_actions,)
+
+    def get_action(self, state: tuple[int, int]) -> int:
+        """epsilon-greedy戦略でアクションを選択"""
+        if np.random.random() < self.epsilon:
+            # 探索: ランダムにアクションを選択
+            return np.random.choice(self.env.get_actions())
+        else:
+            # 活用: Q値が最大のアクションを選択
+            q_values = self._get_q_values(state)
+            return int(np.argmax(q_values))
+
+    def update(
+        self,
+        state: tuple[int, int],
+        action: int,
+        reward: float | None,
+        next_state: tuple[int, int],
+        done: bool,
+    ) -> float:
+        """Q値を更新（NNの重みを勾配降下法で更新）
+
+        Returns:
+            loss値
+        """
+        r = reward if reward is not None else 0.0
+
+        # TDターゲットを計算
+        if done:
+            target = r
+        else:
+            # 次の状態での最大Q値（勾配を流さない）
+            next_q_values = self._get_q_values(next_state)
+            target = r + self.gamma * np.max(next_q_values)
+
+        # 現在のQ値を計算（勾配を流す）
+        x = self._state_to_input(state)
+        q_values = self.qnet(x)  # (1, n_actions)
+        current_q = q_values[0, action]  # スカラー
+
+        # MSE損失: (target - Q(s,a))^2
+        target_var = Variable(np.array(target, dtype=np.float32))
+        loss = (target_var - current_q) ** 2
+
+        # 勾配をクリアして逆伝播
+        self.qnet.cleargrads()
+        loss.backward()
+        self.optimizer.update()
+
+        return float(loss.data_required)
+
+    @property
+    def Q(self) -> dict[tuple[tuple[int, int], int], float]:
+        """render_q用にQ値を辞書形式で返す"""
+        q_dict = {}
+        for state in self.env.states():
+            q_values = self._get_q_values(state)
+            for action in self.env.get_actions():
+                q_dict[(state, action)] = float(q_values[action])
+        return q_dict
+
+
+# =============================================================================
 # AgentTrainer
 # =============================================================================
 
@@ -980,3 +1097,61 @@ env.render_v_pi(V_from_Q, pi_from_Q)
 
 # pi, V = value_iter(V, random_env, gamma=0.9, on_update=on_value_update)
 # random_env.render_v_pi(V, pi)  # 最終結果
+
+# %%
+# QNet-learning (NN-based Q-learning)
+import matplotlib.pyplot as plt
+
+env = GridWorld()
+qnet_agent = QNetLearningAgent(env, gamma=0.9, epsilon=0.1, lr=0.01, hidden_size=128)
+
+# 学習中のlossを記録
+episode_losses: list[float] = []
+current_episode_losses: list[float] = []
+
+
+def on_step(agent, state, action, reward, next_state, done):
+    loss = agent.update(state, action, reward, next_state, done)
+    current_episode_losses.append(loss)
+
+
+def on_episode_end(agent, env, episode):
+    # エピソード終了時に平均lossを記録
+    if current_episode_losses:
+        avg_loss = sum(current_episode_losses) / len(current_episode_losses)
+        episode_losses.append(avg_loss)
+        current_episode_losses.clear()
+
+
+trainer = AgentTrainer(
+    env,
+    qnet_agent,
+    num_episodes=1000,
+    on_step=on_step,
+    on_episode_end=on_episode_end,
+)
+trainer.train()
+
+# 平均lossの推移を図示
+plt.figure(figsize=(10, 4))
+plt.plot(episode_losses)
+plt.xlabel("Episode")
+plt.ylabel("Average Loss")
+plt.title("QNet-learning: Average Loss per Episode")
+plt.grid(True)
+plt.show()
+
+# Q値を可視化
+env.render_q(qnet_agent.Q)
+
+# 最終結果を表示（QからV, piを導出）
+V_from_Q = {
+    s: max(qnet_agent.Q[(s, a)] for a in env.get_actions()) for s in env.states()
+}
+pi_from_Q = {}
+for state in env.states():
+    if state in env.walls or state == env.goal:
+        continue
+    best_action = max(env.get_actions(), key=lambda a: qnet_agent.Q[(state, a)])
+    pi_from_Q[state] = {a: 1.0 if a == best_action else 0.0 for a in env.get_actions()}
+env.render_v_pi(V_from_Q, pi_from_Q)
