@@ -13,6 +13,13 @@ from dpl.agent_trainer import AgentTrainer
 from dpl.agent import ReplayBuffer, BaseAgent
 
 
+# %% Feature Toggle
+# 観測モード: "onehot" または "local"
+# - onehot: one-hotエンコーディング (width * height次元)
+# - local: 局所視野 (3x3の壁情報9次元 + 正規化座標2次元 = 11次元)
+OBSERVATION_MODE = "local"
+
+
 # %% Map Parser
 def parse_grid_map(
     ascii_map: str,
@@ -97,13 +104,19 @@ class GridWorld:
         各ステップ: -0.01 (効率的な経路を学習させるため)
     """
 
-    def __init__(self, ascii_map: str = MAP_ASCII, max_steps: int = 200):
+    def __init__(
+        self,
+        ascii_map: str = MAP_ASCII,
+        max_steps: int = 200,
+        random_start: bool = False,
+    ):
         start, goal, obstacles, width, height = parse_grid_map(ascii_map)
 
         self.width = width
         self.height = height
         self.max_steps = max_steps
         self.action_space_n = 4  # 上下左右
+        self.random_start = random_start  # デフォルトのスタート位置設定
 
         self.obstacles = obstacles
         self.goal = goal
@@ -113,20 +126,69 @@ class GridWorld:
 
     @property
     def state_size(self) -> int:
-        """状態空間のサイズ（one-hot用）"""
-        return self.width * self.height
+        """状態空間のサイズ"""
+        if OBSERVATION_MODE == "onehot":
+            return self.width * self.height
+        else:  # local
+            # 3x3の壁情報(9) + 正規化座標(2) = 11
+            return 11
 
     def reset(self) -> np.ndarray:
-        """環境をリセット"""
-        self.agent_pos = list(self.start)
+        """環境をリセット
+
+        random_startはインスタンス生成時に設定されたデフォルト値を使用する。
+        """
+        if self.random_start:
+            # 有効なスタート位置を収集
+            valid_positions = []
+            for y in range(self.height):
+                for x in range(self.width):
+                    if (x, y) not in self.obstacles and (x, y) != self.goal:
+                        valid_positions.append((x, y))
+            # ランダムに選択
+            start_pos = valid_positions[np.random.randint(len(valid_positions))]
+            self.agent_pos = list(start_pos)
+        else:
+            self.agent_pos = list(self.start)
         self.steps = 0
         return self._get_state()
 
     def _get_state(self) -> np.ndarray:
-        """状態を返す（one-hotエンコーディング）"""
-        state = np.zeros(self.state_size, dtype=np.float32)
+        """状態を返す"""
+        if OBSERVATION_MODE == "onehot":
+            return self._get_state_onehot()
+        else:  # local
+            return self._get_state_local()
+
+    def _get_state_onehot(self) -> np.ndarray:
+        """one-hotエンコーディング"""
+        state = np.zeros(self.width * self.height, dtype=np.float32)
         idx = self.agent_pos[1] * self.width + self.agent_pos[0]
         state[idx] = 1.0
+        return state
+
+    def _get_state_local(self) -> np.ndarray:
+        """局所視野: 3x3の壁情報 + 正規化座標"""
+        x, y = self.agent_pos
+
+        # 3x3の壁情報（障害物または範囲外なら1、通行可能なら0）
+        local_view = []
+        for dy in [-1, 0, 1]:
+            for dx in [-1, 0, 1]:
+                nx, ny = x + dx, y + dy
+                # 範囲外チェック
+                if nx < 0 or nx >= self.width or ny < 0 or ny >= self.height:
+                    local_view.append(1.0)  # 範囲外は壁扱い
+                elif (nx, ny) in self.obstacles:
+                    local_view.append(1.0)  # 障害物
+                else:
+                    local_view.append(0.0)  # 通行可能
+
+        # 正規化座標
+        norm_x = x / (self.width - 1)
+        norm_y = y / (self.height - 1)
+
+        state = np.array(local_view + [norm_x, norm_y], dtype=np.float32)
         return state
 
     def step(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict]:
@@ -206,7 +268,9 @@ class GridWorld:
 class QNet(L.Sequential):
     """GridWorld用のQ-Network
 
-    入力: 状態(one-hotエンコーディング: width * height次元)
+    入力: 状態
+        - onehot: one-hotエンコーディング (width * height次元)
+        - local: 局所視野 (3x3壁情報9次元 + 正規化座標2次元 = 11次元)
     出力: 各アクションのQ値(4次元: 上、下、左、右)
     """
 
@@ -442,8 +506,8 @@ def evaluate_agent(agent: DQNAgent, env: GridWorld, num_episodes: int = 3):
 # %% Training
 print("Training DQN Agent on GridWorld...")
 
-env = GridWorld()
-eval_env = GridWorld()
+env = GridWorld(random_start=False)  # トレーニングは固定スタート
+eval_env = GridWorld(random_start=True)  # 評価はランダムスタート（汎化性能を確認）
 agent = DQNAgent(state_size=env.state_size)
 
 trainer = AgentTrainer(
@@ -485,6 +549,31 @@ plt.tight_layout()
 plt.show()
 
 
+# %% Helper function for visualization
+def _get_state_for_pos(x: int, y: int, env: GridWorld) -> np.ndarray:
+    """指定位置の状態を取得（可視化用）"""
+    if OBSERVATION_MODE == "onehot":
+        state = np.zeros(env.width * env.height, dtype=np.float32)
+        state[y * env.width + x] = 1.0
+        return state
+    else:  # local
+        # 3x3の壁情報
+        local_view = []
+        for dy in [-1, 0, 1]:
+            for dx in [-1, 0, 1]:
+                nx, ny = x + dx, y + dy
+                if nx < 0 or nx >= env.width or ny < 0 or ny >= env.height:
+                    local_view.append(1.0)
+                elif (nx, ny) in env.obstacles:
+                    local_view.append(1.0)
+                else:
+                    local_view.append(0.0)
+        # 正規化座標
+        norm_x = x / (env.width - 1)
+        norm_y = y / (env.height - 1)
+        return np.array(local_view + [norm_x, norm_y], dtype=np.float32)
+
+
 # %% Q-Value Heatmap
 def plot_q_heatmap(agent: DQNAgent, env: GridWorld):
     """各セルのQ値を4方向の三角形で可視化
@@ -506,13 +595,10 @@ def plot_q_heatmap(agent: DQNAgent, env: GridWorld):
 
     # 各セルのQ値を計算
     q_values = np.zeros((height, width, 4))
-    state_size = env.state_size
 
     for y in range(height):
         for x in range(width):
-            # one-hotエンコーディング
-            state = np.zeros(state_size, dtype=np.float32)
-            state[y * width + x] = 1.0
+            state = _get_state_for_pos(x, y, env)
             state_var = Variable(state.reshape(1, -1))
             q = agent.qnet(state_var).data_required[0]
             q_values[y, x] = q
@@ -648,16 +734,13 @@ def plot_value_and_policy(agent: DQNAgent, env: GridWorld):
     obstacles = env.obstacles
     goal = env.goal
     start = env.start
-    state_size = env.state_size
 
     # 各セルのQ値を計算
     q_values = np.zeros((height, width, 4))
 
     for y in range(height):
         for x in range(width):
-            # one-hotエンコーディング
-            state = np.zeros(state_size, dtype=np.float32)
-            state[y * width + x] = 1.0
+            state = _get_state_for_pos(x, y, env)
             state_var = Variable(state.reshape(1, -1))
             q = agent.qnet(state_var).data_required[0]
             q_values[y, x] = q
