@@ -5,6 +5,7 @@
 # %% Imports
 import numpy as np
 from collections import deque
+from dataclasses import dataclass
 
 import dpl.layers as L
 import dpl.functions as F
@@ -22,10 +23,14 @@ from dpl.agent import ReplayBuffer, BaseAgent
 OBSERVATION_MODE = "local_partial"
 
 # フレームスタック数（過去K個の観測を連結して状態とする）
-FRAME_STACK = 4
+# DRQNの場合は1に設定（LSTMが履歴を処理するため）
+FRAME_STACK = 1
 
-# Dueling DQN: True=Dueling DQN, False=通常のDouble DQN
-USE_DUELING = True
+# ネットワークタイプ: "double_dqn", "dueling_dqn", "drqn"
+# - double_dqn: Double DQN（action選択はqnet、Q値評価はtarget_qnet）
+# - dueling_dqn: Dueling DQN（Value streamとAdvantage streamに分離）
+# - drqn: Deep Recurrent Q-Network（LSTMで時系列を処理）
+NETWORK_TYPE = "drqn"
 
 
 # %% Map Parser
@@ -453,6 +458,106 @@ class FrameStackEnv:
         self.env.render()
 
 
+# %% Episode Replay Buffer (for DRQN)
+@dataclass
+class Transition:
+    """1ステップの遷移データ"""
+
+    o: np.ndarray  # (obs_dim,)
+    a: int
+    r: float
+    o2: np.ndarray  # (obs_dim,)
+    terminated: int  # 0/1 (bootstrap cut)
+
+
+class EpisodeReplay:
+    """エピソード単位でシーケンスをサンプリングするReplay Buffer
+
+    DRQN用: LSTMの学習には連続したシーケンスが必要
+    """
+
+    def __init__(self, capacity_episodes: int = 2000):
+        self.capacity = capacity_episodes
+        self.episodes: list[list[Transition]] = []
+        self.current: list[Transition] = []
+
+    def __len__(self) -> int:
+        """完了したエピソード数を返す"""
+        return len(self.episodes)
+
+    def start_episode(self):
+        """新しいエピソードを開始"""
+        self.current = []
+
+    def add(self, o: np.ndarray, a: int, r: float, o2: np.ndarray, terminated: int):
+        """遷移を現在のエピソードに追加"""
+        self.current.append(Transition(o, a, r, o2, terminated))
+
+    def end_episode(self):
+        """現在のエピソードを完了してバッファに追加"""
+        if len(self.current) > 0:
+            self.episodes.append(self.current)
+            if len(self.episodes) > self.capacity:
+                self.episodes.pop(0)
+        self.current = []
+
+    def can_sample(self, batch: int, seq_len: int, burn_in: int) -> bool:
+        """サンプリング可能かどうかを判定"""
+        need = seq_len + burn_in
+        long_eps = [ep for ep in self.episodes if len(ep) >= need]
+        return len(long_eps) >= batch
+
+    def sample_sequences(
+        self, batch: int, seq_len: int, burn_in: int
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """シーケンスをバッチでサンプリング
+
+        Args:
+            batch: バッチサイズ
+            seq_len: 学習用シーケンス長
+            burn_in: LSTM状態を安定させるためのウォームアップ長
+
+        Returns:
+            obs: (B, L, obs_dim) 観測シーケンス
+            acts: (B, L) アクションシーケンス
+            rews: (B, L) 報酬シーケンス
+            terms: (B, L) 終了フラグシーケンス
+            next_obs: (B, L, obs_dim) 次観測シーケンス
+            mask: (B, L) 損失計算用マスク（burn-in部分は0）
+        """
+        L = burn_in + seq_len
+        # 長さ十分なepisodeから選ぶ
+        candidates = [ep for ep in self.episodes if len(ep) >= L]
+        assert (
+            len(candidates) >= batch
+        ), f"Not enough episodes: {len(candidates)} < {batch}"
+
+        obs_dim = candidates[0][0].o.shape[0]
+
+        obs = np.zeros((batch, L, obs_dim), np.float32)
+        next_obs = np.zeros((batch, L, obs_dim), np.float32)
+        acts = np.zeros((batch, L), np.int64)
+        rews = np.zeros((batch, L), np.float32)
+        terms = np.zeros((batch, L), np.float32)
+        mask = np.zeros((batch, L), np.float32)
+
+        for b in range(batch):
+            ep = candidates[np.random.randint(len(candidates))]
+            start = np.random.randint(0, len(ep) - L + 1)
+            chunk = ep[start : start + L]
+            for t, tr in enumerate(chunk):
+                obs[b, t] = tr.o
+                next_obs[b, t] = tr.o2
+                acts[b, t] = tr.a
+                rews[b, t] = tr.r
+                terms[b, t] = tr.terminated
+
+            # burn-in を除外して loss を計算する
+            mask[b, burn_in:] = 1.0
+
+        return obs, acts, rews, terms, next_obs, mask
+
+
 # %% Q-Network
 class QNet(L.Sequential):
     """GridWorld用のQ-Network
@@ -542,6 +647,123 @@ class DuelingQNet(L.Layer):
         return v.data_required, a.data_required
 
 
+class DRQN(L.Layer):
+    """Deep Recurrent Q-Network
+
+    TimeLSTMを使用して時系列データを処理するDQN。
+    部分観測環境（POMDP）に対応できる。
+
+    - forward(): バッチシーケンス処理（学習用）
+    - step(): 1ステップ推論（アクション選択用）
+    """
+
+    def __init__(self, obs_dim: int = 9, action_size: int = 4, hidden_size: int = 64):
+        super().__init__()
+        self.obs_dim = obs_dim
+        self.action_size = action_size
+        self.hidden_size = hidden_size
+
+        # 特徴抽出層
+        self.fc_in = L.Linear(hidden_size, in_size=obs_dim)
+
+        # TimeLSTM層（stateful=Trueで状態を保持）
+        self.lstm = L.TimeLSTM(hidden_size, in_size=hidden_size, stateful=True)
+
+        # Q値出力層
+        self.fc_out = L.Linear(action_size, in_size=hidden_size)
+
+    def reset_state(self):
+        """LSTMの内部状態をリセット"""
+        self.lstm.reset_state()
+
+    def forward(self, *inputs: Variable) -> Variable:
+        """バッチシーケンス処理（学習用）
+
+        Args:
+            inputs[0]: (B, T, obs_dim) の観測シーケンス
+
+        Returns:
+            Q_seq: (B, T, action_size) のQ値シーケンス
+
+        Note:
+            statefulモードはforward_stateful()またはstep()を使用
+        """
+        x = inputs[0]
+        # 学習時はstateful=Falseで状態をリセット
+        self.lstm.stateful = False
+        self.lstm.reset_state()
+
+        B, T, D = x.shape
+
+        # (B*T, D) にreshape
+        x2 = F.reshape(x, (B * T, D))
+
+        # 特徴抽出
+        h2 = F.relu(self.fc_in(x2))
+
+        # (B, T, hidden) にreshape
+        h = F.reshape(h2, (B, T, self.hidden_size))
+
+        # TimeLSTM: (B, T, hidden) → (B, T, hidden)
+        hs = self.lstm(h)
+
+        # (B*T, hidden) にreshape
+        hs2 = F.reshape(hs, (B * T, self.hidden_size))
+
+        # Q値出力
+        q2 = self.fc_out(hs2)
+
+        # (B, T, action_size) にreshape
+        q = F.reshape(q2, (B, T, self.action_size))
+
+        return q
+
+    def _forward_impl(self, x: Variable, stateful: bool) -> Variable:
+        """forward実装の共通部分"""
+        self.lstm.stateful = stateful
+        if not stateful:
+            self.lstm.reset_state()
+
+        B, T, D = x.shape
+
+        # (B*T, D) にreshape
+        x2 = F.reshape(x, (B * T, D))
+
+        # 特徴抽出
+        h2 = F.relu(self.fc_in(x2))
+
+        # (B, T, hidden) にreshape
+        h = F.reshape(h2, (B, T, self.hidden_size))
+
+        # TimeLSTM: (B, T, hidden) → (B, T, hidden)
+        hs = self.lstm(h)
+
+        # (B*T, hidden) にreshape
+        hs2 = F.reshape(hs, (B * T, self.hidden_size))
+
+        # Q値出力
+        q2 = self.fc_out(hs2)
+
+        # (B, T, action_size) にreshape
+        q = F.reshape(q2, (B, T, self.action_size))
+
+        return q
+
+    def step(self, o_t: np.ndarray) -> np.ndarray:
+        """1ステップ推論（アクション選択用）
+
+        Args:
+            o_t: (obs_dim,) の観測
+
+        Returns:
+            q_t: (action_size,) のQ値
+        """
+        # (1, 1, obs_dim) に変換
+        x = Variable(o_t.astype(np.float32)[None, None, :])
+        q = self._forward_impl(x, stateful=True)
+        return np.array(q.data_required[0, 0])  # (action_size,)
+
+
 # %% DQN Agent
 class DQNAgent(BaseAgent):
     """Double DQN Agent for GridWorld
@@ -570,6 +792,9 @@ class DQNAgent(BaseAgent):
         hidden_size: int = 64,
         grad_clip: float = 1.0,
         warmup_steps: int = 500,
+        # DRQN用パラメータ
+        seq_len: int = 8,  # 学習用シーケンス長
+        burn_in: int = 4,  # LSTM安定化用のウォームアップ長
     ):
         self.state_size = state_size
         self.action_size = action_size
@@ -582,19 +807,35 @@ class DQNAgent(BaseAgent):
         self.target_update_freq = target_update_freq
         self.grad_clip = grad_clip
         self.warmup_steps = warmup_steps
+        # DRQN用
+        self.seq_len = seq_len
+        self.burn_in = burn_in
 
-        # Q-Network（USE_DUELINGに応じて切り替え）
-        if USE_DUELING:
+        # Q-Network（NETWORK_TYPEに応じて切り替え）
+        if NETWORK_TYPE == "dueling_dqn":
             self.qnet = DuelingQNet(state_size, action_size, hidden_size)
             self.target_qnet = DuelingQNet(state_size, action_size, hidden_size)
-        else:
+            # ダミー入力で重みを初期化
+            dummy_input = Variable(np.zeros((1, state_size), dtype=np.float32))
+            self.qnet(dummy_input)
+            self.target_qnet(dummy_input)
+        elif NETWORK_TYPE == "drqn":
+            self.qnet = DRQN(state_size, action_size, hidden_size)
+            self.target_qnet = DRQN(state_size, action_size, hidden_size)
+            # ダミー入力で重みを初期化（B, T, obs_dim）
+            dummy_input = Variable(np.zeros((1, 1, state_size), dtype=np.float32))
+            self.qnet(dummy_input)
+            self.target_qnet(dummy_input)
+            # LSTM状態をリセット
+            self.qnet.reset_state()
+            self.target_qnet.reset_state()
+        else:  # double_dqn
             self.qnet = QNet(state_size, action_size, hidden_size)
             self.target_qnet = QNet(state_size, action_size, hidden_size)
-
-        # ダミー入力で重みを初期化
-        dummy_input = Variable(np.zeros((1, state_size), dtype=np.float32))
-        self.qnet(dummy_input)
-        self.target_qnet(dummy_input)
+            # ダミー入力で重みを初期化
+            dummy_input = Variable(np.zeros((1, state_size), dtype=np.float32))
+            self.qnet(dummy_input)
+            self.target_qnet(dummy_input)
 
         # Target networkを初期化
         self._hard_update_target()
@@ -602,8 +843,11 @@ class DQNAgent(BaseAgent):
         # Optimizer
         self.optimizer = Adam(lr=lr).setup(self.qnet)
 
-        # Replay Buffer
-        self.buffer = ReplayBuffer(buffer_size)
+        # Replay Buffer（DRQNはEpisodeReplayを使用）
+        if NETWORK_TYPE == "drqn":
+            self.buffer = EpisodeReplay(capacity_episodes=buffer_size // 50)
+        else:
+            self.buffer = ReplayBuffer(buffer_size)
 
         # 学習ステップカウンタ
         self.learn_step = 0
@@ -645,6 +889,13 @@ class DQNAgent(BaseAgent):
                 if param.grad is not None:
                     param.grad.data = param.grad.data_required * scale
 
+    def reset_state(self):
+        """DRQN用: LSTM状態をリセット（エピソード開始時に呼び出す）"""
+        if isinstance(self.qnet, DRQN):
+            self.qnet.reset_state()
+        if isinstance(self.target_qnet, DRQN):
+            self.target_qnet.reset_state()
+
     def get_action(self, state: np.ndarray) -> int:
         """epsilon-greedy戦略でアクションを選択"""
         if np.random.random() < self.epsilon:
@@ -661,13 +912,39 @@ class DQNAgent(BaseAgent):
 
     def _greedy_action(self, state: np.ndarray) -> int:
         """Q値が最大のアクションを選択"""
-        state_var = Variable(state.reshape(1, -1).astype(np.float32))
-        q_values = self.qnet(state_var)
-        return int(np.argmax(q_values.data_required[0]))
+        if isinstance(self.qnet, DRQN):
+            # DRQN: step()で1ステップ推論（状態保持）
+            q_values = self.qnet.step(state)
+            return int(np.argmax(q_values))
+        else:
+            state_var = Variable(state.reshape(1, -1).astype(np.float32))
+            q_values = self.qnet(state_var)
+            return int(np.argmax(q_values.data_required[0]))
 
-    def store(self, state, action, reward, next_state, done):
-        """経験をバッファに保存"""
-        self.buffer.push(state, action, reward, next_state, done)
+    def store(self, state, action, reward, next_state, done, *, terminated=None):
+        """経験をバッファに保存
+
+        Args:
+            terminated: ブートストラップカット用（DRQN用、省略時はdoneを使用）
+                - terminated=True: 自然終了（ゴール到達など）→ Q(s')=0
+                - terminated=False: 時間切れ（truncated）→ Q(s')を推定
+        """
+        if isinstance(self.buffer, EpisodeReplay):
+            # DRQN: terminatedのみでブートストラップカット
+            term_flag = terminated if terminated is not None else done
+            self.buffer.add(state, action, reward, next_state, int(term_flag))
+        else:
+            self.buffer.push(state, action, reward, next_state, done)
+
+    def start_episode(self):
+        """エピソード開始時に呼び出す（DRQN用）"""
+        if isinstance(self.buffer, EpisodeReplay):
+            self.buffer.start_episode()
+
+    def end_episode(self):
+        """エピソード終了時に呼び出す（DRQN用）"""
+        if isinstance(self.buffer, EpisodeReplay):
+            self.buffer.end_episode()
 
     def update(self) -> float | None:
         """ミニバッチでQ-Networkを更新
@@ -675,6 +952,13 @@ class DQNAgent(BaseAgent):
         Returns:
             loss値（バッファが足りない場合やwarmup中はNone）
         """
+        if isinstance(self.buffer, EpisodeReplay):
+            return self._update_drqn()
+        else:
+            return self._update_dqn()
+
+    def _update_dqn(self) -> float | None:
+        """通常のDQN/Dueling DQN用の更新"""
         if len(self.buffer) < self.warmup_steps:
             return None
         if len(self.buffer) < self.batch_size:
@@ -720,6 +1004,87 @@ class DQNAgent(BaseAgent):
 
         return float(loss.data_required)
 
+    def _update_drqn(self) -> float | None:
+        """DRQN用のシーケンスベース更新（TimeLSTM版）"""
+        assert isinstance(self.buffer, EpisodeReplay)
+        assert isinstance(self.qnet, DRQN)
+        assert isinstance(self.target_qnet, DRQN)
+
+        # サンプリング可能か確認
+        if not self.buffer.can_sample(self.batch_size, self.seq_len, self.burn_in):
+            return None
+
+        # シーケンスをサンプリング
+        obs, acts, rews, terms, next_obs, mask = self.buffer.sample_sequences(
+            self.batch_size, self.seq_len, self.burn_in
+        )
+        # obs: (B, L, obs_dim), acts: (B, L), rews: (B, L), terms: (B, L), mask: (B, L)
+        B, L, _ = obs.shape
+
+        # Target networkでnext_obsのQ値を計算（勾配不要）
+        # forward()はstateful=Falseで状態リセットされる
+        target_q_seq = self.target_qnet(Variable(next_obs.astype(np.float32)))
+        target_q_values = target_q_seq.data_required  # (B, L, action_size)
+
+        # Double DQN: main networkでaction選択、target networkで評価
+        main_q_for_action = self.qnet(Variable(next_obs.astype(np.float32)))
+        best_actions = np.argmax(main_q_for_action.data_required, axis=2)  # (B, L)
+
+        # Target Q値を取得
+        max_next_q = np.zeros((B, L), dtype=np.float32)
+        for b in range(B):
+            for t in range(L):
+                max_next_q[b, t] = target_q_values[b, t, best_actions[b, t]]
+
+        # TD targets: r + γ * max_Q(s', a') * (1 - terminated)
+        targets = rews + self.gamma * max_next_q * (1 - terms)  # (B, L)
+
+        # 現在のQ値を計算（勾配計算用）
+        q_seq = self.qnet(Variable(obs.astype(np.float32)))  # (B, L, action_size)
+
+        # 選択したアクションのQ値を取得
+        # acts: (B, L) → one-hot: (B, L, action_size)
+        action_masks = np.eye(self.action_size)[acts]  # (B, L, action_size)
+        current_q = F.sum(
+            q_seq * Variable(action_masks.astype(np.float32)), axis=2
+        )  # (B, L)
+
+        # ターゲット
+        targets_var = Variable(targets.astype(np.float32))  # (B, L)
+
+        # MSE loss（マスク適用: burn-in部分は無視）
+        diff = current_q - targets_var  # (B, L)
+        mask_var = Variable(mask.astype(np.float32))  # (B, L)
+        masked_sq_diff = diff * diff * mask_var  # (B, L)
+
+        # 平均loss
+        total_mask = np.sum(mask)
+        if total_mask > 0:
+            loss = F.sum(masked_sq_diff) / total_mask
+        else:
+            return None
+
+        self.qnet.cleargrads()
+        loss.backward()
+
+        self._clip_grads()
+
+        self.optimizer.update()
+
+        self.learn_step += 1
+        if self.tau > 0:
+            self._soft_update_target()
+        else:
+            if self.learn_step % self.target_update_freq == 0:
+                self._hard_update_target()
+
+        # LSTM状態をリセット（次のstep()呼び出しに備える）
+        # forward()でバッチ処理後、hidden stateのバッチサイズが変わるため
+        self.qnet.reset_state()
+        self.target_qnet.reset_state()
+
+        return float(loss.data_required)
+
     def decay_epsilon(self):
         """エピソード終了時にepsilonを減衰"""
         if self.epsilon > self.epsilon_min:
@@ -745,6 +1110,8 @@ def evaluate_agent(
     for episode in range(num_episodes):
         # 環境をリセット（corner_start=Trueなら四隅からスタート）
         observation = env.reset()
+        # DRQN用: LSTM状態をリセット
+        agent.reset_state()
 
         total_reward = 0.0
         steps = 0
@@ -761,9 +1128,14 @@ def evaluate_agent(
             # 現在位置を記録
             pos: tuple[int, int] = (base_env.agent_pos[0], base_env.agent_pos[1])
 
-            state_var = Variable(observation.reshape(1, -1).astype(np.float32))
-            q_values = agent.qnet(state_var)
-            action = int(np.argmax(q_values.data_required[0]))
+            # DRQN用: step()で1ステップ推論
+            if isinstance(agent.qnet, DRQN):
+                q_values = agent.qnet.step(observation)
+                action = int(np.argmax(q_values))
+            else:
+                state_var = Variable(observation.reshape(1, -1).astype(np.float32))
+                q_values = agent.qnet(state_var)
+                action = int(np.argmax(q_values.data_required[0]))
 
             # 訪問したセルにアクションを記録
             visited[pos] = action
@@ -907,7 +1279,7 @@ trainer = AgentTrainer(
     env=env,
     eval_env=eval_env,
     agent=agent,
-    num_episodes=1000,
+    num_episodes=5000,
     eval_interval=50,
 )
 
@@ -980,6 +1352,22 @@ def _get_state_for_pos(x: int, y: int, env: GridWorld) -> np.ndarray:
     return single_state
 
 
+# %% Q-Value Helper
+def _get_q_values_for_pos(
+    agent: DQNAgent, x: int, y: int, env: GridWorld
+) -> np.ndarray:
+    """指定位置のQ値を取得（DRQN対応）"""
+    state = _get_state_for_pos(x, y, env)
+    if isinstance(agent.qnet, DRQN):
+        # DRQN: (1, 1, obs_dim) 形式で入力、状態リセット
+        agent.qnet.reset_state()
+        state_var = Variable(state.reshape(1, 1, -1))
+        return np.asarray(agent.qnet(state_var).data_required[0, 0])
+    else:
+        state_var = Variable(state.reshape(1, -1))
+        return np.asarray(agent.qnet(state_var).data_required[0])
+
+
 # %% Q-Value Heatmap
 def plot_q_heatmap(agent: DQNAgent, env: GridWorld):
     """各セルのQ値を4方向の三角形で可視化
@@ -1004,10 +1392,7 @@ def plot_q_heatmap(agent: DQNAgent, env: GridWorld):
 
     for y in range(height):
         for x in range(width):
-            state = _get_state_for_pos(x, y, env)
-            state_var = Variable(state.reshape(1, -1))
-            q = agent.qnet(state_var).data_required[0]
-            q_values[y, x] = q
+            q_values[y, x] = _get_q_values_for_pos(agent, x, y, env)
 
     # Q値の範囲を取得（カラーマップ用）
     q_min = np.min(q_values)
@@ -1146,10 +1531,7 @@ def plot_value_and_policy(agent: DQNAgent, env: GridWorld):
 
     for y in range(height):
         for x in range(width):
-            state = _get_state_for_pos(x, y, env)
-            state_var = Variable(state.reshape(1, -1))
-            q = agent.qnet(state_var).data_required[0]
-            q_values[y, x] = q
+            q_values[y, x] = _get_q_values_for_pos(agent, x, y, env)
 
     # V(s) = max_a Q(s, a)
     v_values = np.max(q_values, axis=2)
@@ -1308,7 +1690,7 @@ def plot_dueling_analysis(agent: DQNAgent, env: GridWorld):
     中央: gap(s) = max A - second max A を表示
     右: V(s) × Gap の重ね合わせ（色=V, 明度=Gap）
     """
-    if not USE_DUELING:
+    if NETWORK_TYPE != "dueling_dqn":
         print("Dueling DQNが無効のため、可視化をスキップします")
         return
 
@@ -1618,7 +2000,7 @@ def plot_dueling_analysis(agent: DQNAgent, env: GridWorld):
 print("\nValue and Policy:")
 plot_value_and_policy(agent, base_env)
 
-if USE_DUELING:
+if NETWORK_TYPE == "dueling_dqn":
     print("\nDueling DQN: Advantage & Gap Analysis:")
     plot_dueling_analysis(agent, base_env)
 

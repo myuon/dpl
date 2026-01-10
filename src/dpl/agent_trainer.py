@@ -83,6 +83,13 @@ class AgentTrainer:
     def _run_episode(self) -> tuple[float, list[float], int]:
         """1エピソードを実行"""
         observation = self.env.reset()
+        # DRQN用: LSTM状態をリセット
+        if hasattr(self.agent, "reset_state"):
+            self.agent.reset_state()
+        # DRQN用: エピソード開始
+        if hasattr(self.agent, "start_episode"):
+            self.agent.start_episode()
+
         total_reward = 0.0
         losses: list[float] = []
         steps = 0
@@ -92,7 +99,8 @@ class AgentTrainer:
             next_observation, reward, terminated, truncated, _ = self.env.step(action)
             done = terminated or truncated
 
-            self.agent.store(observation, action, reward, next_observation, done)
+            # DRQN用: terminatedを別途渡す（ブートストラップカット用）
+            self.agent.store(observation, action, reward, next_observation, done, terminated=terminated)
 
             steps += 1
             if steps % self.update_every == 0:
@@ -105,6 +113,10 @@ class AgentTrainer:
 
             if done:
                 break
+
+        # DRQN用: エピソード終了
+        if hasattr(self.agent, "end_episode"):
+            self.agent.end_episode()
 
         return total_reward, losses, steps
 
@@ -142,6 +154,9 @@ class AgentTrainer:
 
         for _ in range(n):
             s = self.eval_env.reset()
+            # DRQN用: LSTM状態をリセット
+            if hasattr(self.agent, "reset_state"):
+                self.agent.reset_state()
             done = False
             total = 0.0
             steps = 0
