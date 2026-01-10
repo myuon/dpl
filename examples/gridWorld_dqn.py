@@ -23,6 +23,9 @@ OBSERVATION_MODE = "local"
 # フレームスタック数（過去K個の観測を連結して状態とする）
 FRAME_STACK = 8
 
+# Dueling DQN: True=Dueling DQN, False=通常のDouble DQN
+USE_DUELING = True
+
 
 # %% Map Parser
 def parse_grid_map(
@@ -457,6 +460,71 @@ class QNet(L.Sequential):
         self.action_size = action_size
 
 
+class DuelingQNet(L.Layer):
+    """Dueling DQN用のQ-Network
+
+    Q値をValue関数とAdvantage関数に分解:
+        Q(s, a) = V(s) + (A(s, a) - mean(A(s, a')))
+
+    これにより、アクションに依存しない状態の価値を効率的に学習できる。
+    """
+
+    def __init__(
+        self, state_size: int = 2, action_size: int = 4, hidden_size: int = 64
+    ):
+        super().__init__()
+        self.state_size = state_size
+        self.action_size = action_size
+
+        # 共通の特徴抽出層
+        self.fc1 = L.Linear(hidden_size)
+        self.fc2 = L.Linear(hidden_size)
+
+        # Value stream: 状態価値 V(s) を出力
+        self.value_fc = L.Linear(hidden_size // 2)
+        self.value_out = L.Linear(1)
+
+        # Advantage stream: 各アクションのアドバンテージ A(s, a) を出力
+        self.adv_fc = L.Linear(hidden_size // 2)
+        self.adv_out = L.Linear(action_size)
+
+    def _compute_streams(self, x: Variable) -> tuple[Variable, Variable]:
+        """共通層を通してValue streamとAdvantage streamを計算"""
+        # 共通層
+        h = F.relu(self.fc1(x))
+        h = F.relu(self.fc2(h))
+
+        # Value stream
+        v = F.relu(self.value_fc(h))
+        v = self.value_out(v)  # (batch, 1)
+
+        # Advantage stream
+        a = F.relu(self.adv_fc(h))
+        a = self.adv_out(a)  # (batch, action_size)
+
+        return v, a
+
+    def forward(self, *inputs: Variable) -> Variable:
+        x = inputs[0]
+        v, a = self._compute_streams(x)
+
+        # Q = V + (A - mean(A))
+        # mean(A)を引くことで、Vが実際の状態価値を学習しやすくなる
+        a_mean = F.sum(a, axis=1, keepdims=True) / self.action_size  # (batch, 1)
+        q = v + (a - a_mean)
+
+        return q
+
+    def get_value_and_advantage(self, x: Variable):
+        """Value V(s) と Advantage A(s,a) を個別に取得（可視化用）
+
+        Returns:
+            (value, advantage): それぞれ numpy array
+        """
+        v, a = self._compute_streams(x)
+        return v.data_required, a.data_required
+
+
 # %% DQN Agent
 class DQNAgent(BaseAgent):
     """Double DQN Agent for GridWorld
@@ -498,9 +566,13 @@ class DQNAgent(BaseAgent):
         self.grad_clip = grad_clip
         self.warmup_steps = warmup_steps
 
-        # Q-Network
-        self.qnet = QNet(state_size, action_size, hidden_size)
-        self.target_qnet = QNet(state_size, action_size, hidden_size)
+        # Q-Network（USE_DUELINGに応じて切り替え）
+        if USE_DUELING:
+            self.qnet = DuelingQNet(state_size, action_size, hidden_size)
+            self.target_qnet = DuelingQNet(state_size, action_size, hidden_size)
+        else:
+            self.qnet = QNet(state_size, action_size, hidden_size)
+            self.target_qnet = QNet(state_size, action_size, hidden_size)
 
         # ダミー入力で重みを初期化
         dummy_input = Variable(np.zeros((1, state_size), dtype=np.float32))
@@ -521,24 +593,21 @@ class DQNAgent(BaseAgent):
 
     def _soft_update_target(self):
         """Target networkをsoft updateで更新: θ' ← τθ + (1-τ)θ'"""
-        for main_layer, target_layer in zip(self.qnet.layers, self.target_qnet.layers):
-            if isinstance(main_layer, L.Linear) and isinstance(target_layer, L.Linear):
-                target_layer.W.data = (
-                    self.tau * main_layer.W.data + (1 - self.tau) * target_layer.W.data
+        for main_param, target_param in zip(
+            self.qnet.params(), self.target_qnet.params()
+        ):
+            if main_param.data is not None and target_param.data is not None:
+                target_param.data = (
+                    self.tau * main_param.data + (1 - self.tau) * target_param.data
                 )
-                if main_layer.b is not None:
-                    target_layer.b.data = (
-                        self.tau * main_layer.b.data
-                        + (1 - self.tau) * target_layer.b.data
-                    )
 
     def _hard_update_target(self):
         """Target networkをメインnetworkで完全に同期"""
-        for main_layer, target_layer in zip(self.qnet.layers, self.target_qnet.layers):
-            if isinstance(main_layer, L.Linear):
-                target_layer.W.data = main_layer.W.data.copy()
-                if main_layer.b is not None:
-                    target_layer.b.data = main_layer.b.data.copy()
+        for main_param, target_param in zip(
+            self.qnet.params(), self.target_qnet.params()
+        ):
+            if main_param.data is not None:
+                target_param.data = main_param.data.copy()
 
     def _clip_grads(self):
         """Gradient clipping (global norm)"""
@@ -1211,8 +1280,125 @@ def plot_value_and_policy(agent: DQNAgent, env: GridWorld):
     plt.show()
 
 
+def plot_dueling_advantage(agent: DQNAgent, env: GridWorld):
+    """Dueling DQN専用: max A(s,a) のheatmapを可視化
+
+    各セルで最大のAdvantage値を色で表示。
+    Advantageが高い状態 = アクション選択が重要な状態
+    """
+    if not USE_DUELING:
+        print("Dueling DQNが無効のため、Advantage可視化をスキップします")
+        return
+
+    from matplotlib.patches import Rectangle
+    import matplotlib.colors as mcolors
+
+    width = env.width
+    height = env.height
+    obstacles = env.obstacles
+    goal = env.goal
+    start = env.start
+
+    # DuelingQNetであることを確認
+    if not isinstance(agent.qnet, DuelingQNet):
+        print("QNetがDuelingQNetではないため、スキップします")
+        return
+
+    # 各セルのAdvantage値を計算
+    max_advantages = np.zeros((height, width))
+    all_advantages = np.zeros((height, width, 4))
+
+    for y in range(height):
+        for x in range(width):
+            state = _get_state_for_pos(x, y, env)
+            state_var = Variable(state.reshape(1, -1))
+            _, adv = agent.qnet.get_value_and_advantage(state_var)
+            all_advantages[y, x] = adv[0]
+            max_advantages[y, x] = np.max(adv[0])
+
+    # 障害物を除いた値の範囲
+    valid_mask = np.array(
+        [[(x, y) not in obstacles for x in range(width)] for y in range(height)]
+    )
+    valid_max_adv = max_advantages[valid_mask]
+    a_min = np.min(valid_max_adv)
+    a_max = np.max(valid_max_adv)
+    norm = mcolors.Normalize(vmin=a_min, vmax=a_max)
+    cmap = plt.get_cmap("YlOrRd")
+
+    _, ax = plt.subplots(figsize=(8, 8))
+
+    for y in range(height):
+        for x in range(width):
+            if (x, y) in obstacles:
+                color = "gray"
+            else:
+                color = cmap(norm(max_advantages[y, x]))
+
+            rect = Rectangle(
+                (x - 0.5, y - 0.5),
+                1,
+                1,
+                facecolor=color,
+                edgecolor="black",
+                linewidth=0.5,
+            )
+            ax.add_patch(rect)
+
+            if (x, y) not in obstacles:
+                ax.text(
+                    x,
+                    y,
+                    f"{max_advantages[y, x]:.2f}",
+                    ha="center",
+                    va="center",
+                    fontsize=7,
+                    color="black",
+                )
+
+    # スタートとゴール
+    ax.text(
+        start[0],
+        start[1],
+        "S",
+        ha="center",
+        va="center",
+        fontsize=10,
+        color="red",
+        bbox=dict(boxstyle="circle", facecolor="white", edgecolor="red"),
+    )
+    ax.text(
+        goal[0],
+        goal[1],
+        "G",
+        ha="center",
+        va="center",
+        fontsize=10,
+        color="green",
+        bbox=dict(boxstyle="circle", facecolor="white", edgecolor="green"),
+    )
+
+    ax.set_xlim(-0.5, width - 0.5)
+    ax.set_ylim(height - 0.5, -0.5)
+    ax.set_aspect("equal")
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    ax.set_title("Dueling DQN: max_a A(s, a) (Advantage Heatmap)")
+
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    plt.colorbar(sm, ax=ax, label="max A(s,a)")
+
+    plt.tight_layout()
+    plt.show()
+
+
 print("\nValue and Policy:")
 plot_value_and_policy(agent, base_env)
+
+if USE_DUELING:
+    print("\nDueling DQN: Max Advantage Heatmap:")
+    plot_dueling_advantage(agent, base_env)
 
 
 # %% Evaluation
