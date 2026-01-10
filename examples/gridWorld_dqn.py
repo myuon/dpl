@@ -4,6 +4,7 @@
 
 # %% Imports
 import numpy as np
+from collections import deque
 
 import dpl.layers as L
 import dpl.functions as F
@@ -18,6 +19,9 @@ from dpl.agent import ReplayBuffer, BaseAgent
 # - onehot: one-hotエンコーディング (width * height次元)
 # - local: 局所視野 (3x3の壁情報9次元 + ゴールへの正規化方向ベクトル2次元 = 11次元)
 OBSERVATION_MODE = "local"
+
+# フレームスタック数（過去K個の観測を連結して状態とする）
+FRAME_STACK = 8
 
 
 # %% Map Parser
@@ -130,7 +134,7 @@ class GridWorld:
         if OBSERVATION_MODE == "onehot":
             return self.width * self.height
         else:  # local
-            # 3x3の壁情報(9) + 正規化座標(2) = 11
+            # 3x3の壁情報(9) + 方向ベクトル(2) = 11
             return 11
 
     def reset(self) -> np.ndarray:
@@ -267,6 +271,51 @@ class GridWorld:
         for row in grid:
             print("|" + " ".join(row) + "|")
         print("-" * (self.width * 2 + 1))
+
+
+# %% FrameStackEnv Wrapper
+class FrameStackEnv:
+    """任意の環境をラップしてフレームスタックを追加するラッパー"""
+
+    def __init__(self, env, k: int = 4):
+        self.env = env
+        self.k = k
+        self.frames: deque = deque(maxlen=k)
+        self._obs_dim: int | None = None
+
+    def reset(self) -> np.ndarray:
+        obs = self.env.reset()
+        obs = np.asarray(obs, dtype=np.float32)
+
+        if self._obs_dim is None:
+            self._obs_dim = obs.shape[0]
+
+        self.frames.clear()
+        for _ in range(self.k):
+            self.frames.append(obs)
+
+        return self._get_stacked()
+
+    def step(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict]:
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        obs = np.asarray(obs, dtype=np.float32)
+
+        self.frames.append(obs)
+        return self._get_stacked(), reward, terminated, truncated, info
+
+    def _get_stacked(self) -> np.ndarray:
+        """(k*obs_dim,) の1次元ベクトルにする"""
+        return np.concatenate(list(self.frames), axis=0).astype(np.float32)
+
+    @property
+    def state_size(self) -> int:
+        if self._obs_dim is None:
+            raise RuntimeError("Call reset() first to initialize obs dim.")
+        return self._obs_dim * self.k
+
+    def render(self):
+        """ラップした環境のrenderを呼び出す"""
+        self.env.render()
 
 
 # %% Q-Network
@@ -477,28 +526,68 @@ class DQNAgent(BaseAgent):
 
 
 # %% Evaluation Function
-def evaluate_agent(agent: DQNAgent, env: GridWorld, num_episodes: int = 3):
-    """学習済みエージェントをrenderして評価"""
+def evaluate_agent(
+    agent: DQNAgent,
+    env: GridWorld | FrameStackEnv,
+    start_positions: list[tuple[int, int]] | None = None,
+):
+    """学習済みエージェントを評価し、訪問したセルのポリシーを可視化
+
+    Args:
+        agent: 学習済みエージェント
+        env: 環境（GridWorld or FrameStackEnv）
+        start_positions: スタート位置のリスト。Noneの場合は環境のデフォルト動作
+    """
+    # ベース環境を取得
+    base_env = env.env if isinstance(env, FrameStackEnv) else env
+
+    num_episodes = len(start_positions) if start_positions else 3
+
     for episode in range(num_episodes):
-        observation = env.reset()
-        total_reward = 0
+        # スタート位置を設定
+        if start_positions:
+            start_pos = start_positions[episode]
+            # 環境をリセットしてから手動で位置を設定
+            env.reset()
+            base_env.agent_pos = list(start_pos)
+            base_env.steps = 0
+            # FrameStackの場合はフレームバッファを再初期化
+            if isinstance(env, FrameStackEnv):
+                obs = base_env._get_state()
+                env.frames.clear()
+                for _ in range(env.k):
+                    env.frames.append(obs)
+                observation = env._get_stacked()
+            else:
+                observation = base_env._get_state()
+        else:
+            observation = env.reset()
+
+        total_reward = 0.0
         steps = 0
 
-        print(f"\n=== Evaluation Episode {episode + 1} ===")
-        env.render()
+        # 訪問記録: (x, y) -> action
+        visited: dict[tuple[int, int], int] = {}
+
+        start_x, start_y = base_env.agent_pos[0], base_env.agent_pos[1]
+        print(
+            f"\n=== Evaluation Episode {episode + 1} (start: ({start_x}, {start_y})) ==="
+        )
 
         while True:
+            # 現在位置を記録
+            pos: tuple[int, int] = (base_env.agent_pos[0], base_env.agent_pos[1])
+
             state_var = Variable(observation.reshape(1, -1).astype(np.float32))
             q_values = agent.qnet(state_var)
             action = int(np.argmax(q_values.data_required[0]))
 
-            action_names = ["上", "下", "左", "右"]
-            print(f"Step {steps + 1}: Action = {action_names[action]}")
+            # 訪問したセルにアクションを記録
+            visited[pos] = action
 
             observation, reward, terminated, truncated, _ = env.step(action)
             total_reward += reward
             steps += 1
-            env.render()
 
             if terminated:
                 print(f"ゴール到達! Total Reward = {total_reward:.2f}, Steps = {steps}")
@@ -507,19 +596,135 @@ def evaluate_agent(agent: DQNAgent, env: GridWorld, num_episodes: int = 3):
                 print(f"時間切れ... Total Reward = {total_reward:.2f}, Steps = {steps}")
                 break
 
+        # 訪問したセルのポリシーを可視化
+        _plot_visited_policy(base_env, visited, episode + 1, (start_x, start_y))
+
+
+def _plot_visited_policy(
+    env: GridWorld,
+    visited: dict[tuple[int, int], int],
+    episode: int,
+    start_pos: tuple[int, int] | None = None,
+):
+    """訪問したセルのみにポリシー矢印を描画
+
+    Args:
+        env: GridWorld環境
+        visited: 訪問したセル -> アクションの辞書
+        episode: エピソード番号
+        start_pos: スタート位置（Noneの場合はenv.startを使用）
+    """
+    from matplotlib.patches import Rectangle
+
+    width = env.width
+    height = env.height
+    obstacles = env.obstacles
+    goal = env.goal
+    start = start_pos if start_pos is not None else env.start
+
+    # 行動に対応する矢印のオフセット (dx, dy)
+    arrow_directions = {
+        0: (0, -0.3),  # 上
+        1: (0, 0.3),  # 下
+        2: (-0.3, 0),  # 左
+        3: (0.3, 0),  # 右
+    }
+
+    _, ax = plt.subplots(figsize=(8, 8))
+
+    # グリッドを描画
+    for y in range(height):
+        for x in range(width):
+            if (x, y) in obstacles:
+                color = "gray"
+            elif (x, y) in visited:
+                color = "lightgreen"  # 訪問したセル
+            else:
+                color = "white"
+
+            rect = Rectangle(
+                (x - 0.5, y - 0.5),
+                1,
+                1,
+                facecolor=color,
+                edgecolor="black",
+                linewidth=0.5,
+            )
+            ax.add_patch(rect)
+
+            # 訪問したセルに矢印を描画
+            if (x, y) in visited and (x, y) != goal:
+                action = visited[(x, y)]
+                dx, dy = arrow_directions[action]
+                ax.arrow(
+                    x,
+                    y,
+                    dx,
+                    dy,
+                    head_width=0.15,
+                    head_length=0.1,
+                    fc="darkblue",
+                    ec="darkblue",
+                )
+
+    # スタートとゴール
+    ax.text(
+        start[0],
+        start[1],
+        "S",
+        ha="center",
+        va="center",
+        fontsize=12,
+        color="red",
+        fontweight="bold",
+    )
+    ax.text(
+        goal[0],
+        goal[1],
+        "G",
+        ha="center",
+        va="center",
+        fontsize=12,
+        color="green",
+        fontweight="bold",
+    )
+
+    ax.set_xlim(-0.5, width - 0.5)
+    ax.set_ylim(height - 0.5, -0.5)
+    ax.set_aspect("equal")
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    ax.set_title(f"Episode {episode}: Start {start} → Goal (ε=0)")
+
+    plt.tight_layout()
+    plt.show()
+
 
 # %% Training
 print("Training DQN Agent on GridWorld...")
 
-env = GridWorld(random_start=False)  # トレーニングは固定スタート
-eval_env = GridWorld(random_start=True)  # 評価はランダムスタート（汎化性能を確認）
+# ベース環境を作成
+base_env = GridWorld(random_start=False)  # トレーニングは固定スタート
+base_eval_env = GridWorld(random_start=True)  # 評価はランダムスタート（汎化性能を確認）
+
+# FrameStackでラップ（FRAME_STACK > 1 の場合）
+if FRAME_STACK > 1:
+    env = FrameStackEnv(base_env, k=FRAME_STACK)
+    eval_env = FrameStackEnv(base_eval_env, k=FRAME_STACK)
+    # state_sizeを取得するためにreset()を呼ぶ
+    env.reset()
+    eval_env.reset()
+else:
+    env = base_env
+    eval_env = base_eval_env
+
 agent = DQNAgent(state_size=env.state_size)
 
 trainer = AgentTrainer(
     env=env,
     eval_env=eval_env,
     agent=agent,
-    num_episodes=2500,
+    num_episodes=1500,
     eval_interval=50,
 )
 
@@ -556,11 +761,10 @@ plt.show()
 
 # %% Helper function for visualization
 def _get_state_for_pos(x: int, y: int, env: GridWorld) -> np.ndarray:
-    """指定位置の状態を取得（可視化用）"""
+    """指定位置の状態を取得（可視化用、フレームスタック対応）"""
     if OBSERVATION_MODE == "onehot":
-        state = np.zeros(env.width * env.height, dtype=np.float32)
-        state[y * env.width + x] = 1.0
-        return state
+        single_state = np.zeros(env.width * env.height, dtype=np.float32)
+        single_state[y * env.width + x] = 1.0
     else:  # local
         # 3x3の壁情報
         local_view = []
@@ -581,7 +785,12 @@ def _get_state_for_pos(x: int, y: int, env: GridWorld) -> np.ndarray:
         if dist > 0:
             dir_x /= dist
             dir_y /= dist
-        return np.array(local_view + [dir_x, dir_y], dtype=np.float32)
+        single_state = np.array(local_view + [dir_x, dir_y], dtype=np.float32)
+
+    # フレームスタック: 同じ状態をK回繰り返す（静止状態を想定）
+    if FRAME_STACK > 1:
+        return np.tile(single_state, FRAME_STACK)
+    return single_state
 
 
 # %% Q-Value Heatmap
@@ -726,7 +935,7 @@ def plot_q_heatmap(agent: DQNAgent, env: GridWorld):
 
 
 print("\nQ-Value Heatmap:")
-plot_q_heatmap(agent, env)
+plot_q_heatmap(agent, base_env)
 
 
 # %% Value Heatmap and Policy
@@ -906,9 +1115,58 @@ def plot_value_and_policy(agent: DQNAgent, env: GridWorld):
 
 
 print("\nValue and Policy:")
-plot_value_and_policy(agent, env)
+plot_value_and_policy(agent, base_env)
 
 
 # %% Evaluation
 print("\nEvaluating trained agent...")
-evaluate_agent(agent, env, num_episodes=3)
+
+
+# スタート位置を生成: y=0から2つ、y=6から2つ、その他から2つ
+def generate_start_positions(env: GridWorld) -> list[tuple[int, int]]:
+    """評価用のスタート位置を生成"""
+    obstacles = env.obstacles
+    goal = env.goal
+
+    # 各行ごとに有効な位置を収集
+    row_0_positions = [
+        (x, 0) for x in range(env.width) if (x, 0) not in obstacles and (x, 0) != goal
+    ]
+    row_6_positions = [
+        (x, 6) for x in range(env.width) if (x, 6) not in obstacles and (x, 6) != goal
+    ]
+    other_positions = [
+        (x, y)
+        for y in range(1, 6)  # y=1~5
+        for x in range(env.width)
+        if (x, y) not in obstacles and (x, y) != goal
+    ]
+
+    # ランダムに選択
+    np.random.seed(42)  # 再現性のため
+    positions = []
+    positions.extend(
+        [
+            row_0_positions[i]
+            for i in np.random.choice(len(row_0_positions), 2, replace=False)
+        ]
+    )
+    positions.extend(
+        [
+            row_6_positions[i]
+            for i in np.random.choice(len(row_6_positions), 2, replace=False)
+        ]
+    )
+    positions.extend(
+        [
+            other_positions[i]
+            for i in np.random.choice(len(other_positions), 2, replace=False)
+        ]
+    )
+
+    return positions
+
+
+start_positions = generate_start_positions(base_env)
+print(f"Start positions: {start_positions}")
+evaluate_agent(agent, eval_env, start_positions=start_positions)
