@@ -111,6 +111,11 @@ class GridWorld:
 
         self.reset()
 
+    @property
+    def state_size(self) -> int:
+        """状態空間のサイズ（one-hot用）"""
+        return self.width * self.height
+
     def reset(self) -> np.ndarray:
         """環境をリセット"""
         self.agent_pos = list(self.start)
@@ -118,15 +123,11 @@ class GridWorld:
         return self._get_state()
 
     def _get_state(self) -> np.ndarray:
-        """状態を返す（正規化された座標）"""
-        # 座標を0-1に正規化
-        return np.array(
-            [
-                self.agent_pos[0] / (self.width - 1),
-                self.agent_pos[1] / (self.height - 1),
-            ],
-            dtype=np.float32,
-        )
+        """状態を返す（one-hotエンコーディング）"""
+        state = np.zeros(self.state_size, dtype=np.float32)
+        idx = self.agent_pos[1] * self.width + self.agent_pos[0]
+        state[idx] = 1.0
+        return state
 
     def step(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict]:
         """1ステップ実行
@@ -205,7 +206,7 @@ class GridWorld:
 class QNet(L.Sequential):
     """GridWorld用のQ-Network
 
-    入力: 状態(2次元: x座標、y座標、正規化済み)
+    入力: 状態(one-hotエンコーディング: width * height次元)
     出力: 各アクションのQ値(4次元: 上、下、左、右)
     """
 
@@ -443,7 +444,7 @@ print("Training DQN Agent on GridWorld...")
 
 env = GridWorld()
 eval_env = GridWorld()
-agent = DQNAgent()
+agent = DQNAgent(state_size=env.state_size)
 
 trainer = AgentTrainer(
     env=env,
@@ -505,10 +506,13 @@ def plot_q_heatmap(agent: DQNAgent, env: GridWorld):
 
     # 各セルのQ値を計算
     q_values = np.zeros((height, width, 4))
+    state_size = env.state_size
 
     for y in range(height):
         for x in range(width):
-            state = np.array([x / (width - 1), y / (height - 1)], dtype=np.float32)
+            # one-hotエンコーディング
+            state = np.zeros(state_size, dtype=np.float32)
+            state[y * width + x] = 1.0
             state_var = Variable(state.reshape(1, -1))
             q = agent.qnet(state_var).data_required[0]
             q_values[y, x] = q
@@ -644,13 +648,16 @@ def plot_value_and_policy(agent: DQNAgent, env: GridWorld):
     obstacles = env.obstacles
     goal = env.goal
     start = env.start
+    state_size = env.state_size
 
     # 各セルのQ値を計算
     q_values = np.zeros((height, width, 4))
 
     for y in range(height):
         for x in range(width):
-            state = np.array([x / (width - 1), y / (height - 1)], dtype=np.float32)
+            # one-hotエンコーディング
+            state = np.zeros(state_size, dtype=np.float32)
+            state[y * width + x] = 1.0
             state_var = Variable(state.reshape(1, -1))
             q = agent.qnet(state_var).data_required[0]
             q_values[y, x] = q
