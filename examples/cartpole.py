@@ -1,0 +1,282 @@
+import gymnasium as gym
+import numpy as np
+from collections import deque
+import random
+
+import dpl.layers as L
+import dpl.functions as F
+from dpl import Variable
+from dpl.optimizers import Adam
+
+
+class QNet(L.Sequential):
+    """CartPole用のQ-Network
+
+    入力: 状態(4次元: カート位置、カート速度、ポール角度、ポール角速度)
+    出力: 各アクションのQ値(2次元: 左、右)
+    """
+
+    def __init__(self, state_size: int = 4, action_size: int = 2, hidden_size: int = 128):
+        super().__init__(
+            L.Linear(hidden_size),
+            F.relu,
+            L.Linear(hidden_size),
+            F.relu,
+            L.Linear(action_size),
+        )
+        self.state_size = state_size
+        self.action_size = action_size
+
+
+class ReplayBuffer:
+    """Experience Replay用のバッファ"""
+
+    def __init__(self, capacity: int = 10000):
+        self.buffer = deque(maxlen=capacity)
+
+    def push(self, state, action, reward, next_state, done):
+        """経験をバッファに追加"""
+        self.buffer.append((state, action, reward, next_state, done))
+
+    def sample(self, batch_size: int):
+        """バッファからランダムにサンプリング"""
+        batch = random.sample(self.buffer, batch_size)
+        states, actions, rewards, next_states, dones = zip(*batch)
+        return (
+            np.array(states, dtype=np.float32),
+            np.array(actions, dtype=np.int64),
+            np.array(rewards, dtype=np.float32),
+            np.array(next_states, dtype=np.float32),
+            np.array(dones, dtype=np.float32),
+        )
+
+    def __len__(self):
+        return len(self.buffer)
+
+
+class DQNAgent:
+    """DQN Agent
+
+    - Experience Replay: 過去の経験をバッファに保存し、ミニバッチで学習
+    - Target Network: 安定した学習のために定期的にコピー
+    - epsilon-greedy探索
+    """
+
+    def __init__(
+        self,
+        state_size: int = 4,
+        action_size: int = 2,
+        gamma: float = 0.99,
+        epsilon: float = 1.0,
+        epsilon_min: float = 0.01,
+        epsilon_decay: float = 0.995,
+        lr: float = 0.001,
+        batch_size: int = 64,
+        buffer_size: int = 10000,
+        target_update_freq: int = 10,
+        hidden_size: int = 128,
+    ):
+        self.state_size = state_size
+        self.action_size = action_size
+        self.gamma = gamma
+        self.epsilon = epsilon
+        self.epsilon_min = epsilon_min
+        self.epsilon_decay = epsilon_decay
+        self.batch_size = batch_size
+        self.target_update_freq = target_update_freq
+
+        # Q-Network
+        self.qnet = QNet(state_size, action_size, hidden_size)
+        self.target_qnet = QNet(state_size, action_size, hidden_size)
+
+        # ダミー入力で重みを初期化
+        dummy_input = Variable(np.zeros((1, state_size), dtype=np.float32))
+        self.qnet(dummy_input)
+        self.target_qnet(dummy_input)
+
+        # Target networkを初期化
+        self._sync_target()
+
+        # Optimizer
+        self.optimizer = Adam(lr=lr).setup(self.qnet)
+
+        # Replay Buffer
+        self.buffer = ReplayBuffer(buffer_size)
+
+        # 学習ステップカウンタ
+        self.learn_step = 0
+
+    def _sync_target(self):
+        """Target networkをメインnetworkで同期"""
+        # 重みをコピー
+        for main_layer, target_layer in zip(self.qnet.layers, self.target_qnet.layers):
+            if isinstance(main_layer, L.Linear):
+                target_layer.W.data = main_layer.W.data.copy()
+                if main_layer.b is not None:
+                    target_layer.b.data = main_layer.b.data.copy()
+
+    def get_action(self, state: np.ndarray) -> int:
+        """epsilon-greedy戦略でアクションを選択"""
+        if np.random.random() < self.epsilon:
+            return np.random.randint(self.action_size)
+        else:
+            state_var = Variable(state.reshape(1, -1).astype(np.float32))
+            q_values = self.qnet(state_var)
+            return int(np.argmax(q_values.data_required[0]))
+
+    def store(self, state, action, reward, next_state, done):
+        """経験をバッファに保存"""
+        self.buffer.push(state, action, reward, next_state, done)
+
+    def update(self) -> float | None:
+        """ミニバッチでQ-Networkを更新
+
+        Returns:
+            loss値（バッファが足りない場合はNone）
+        """
+        if len(self.buffer) < self.batch_size:
+            return None
+
+        # バッファからサンプリング
+        states, actions, rewards, next_states, dones = self.buffer.sample(self.batch_size)
+
+        # Target Q値を計算（勾配なし）
+        next_states_var = Variable(next_states)
+        next_q_values = self.target_qnet(next_states_var).data_required  # (batch, action_size)
+        max_next_q = np.max(next_q_values, axis=1)  # (batch,)
+        targets = rewards + self.gamma * max_next_q * (1 - dones)  # (batch,)
+
+        # 現在のQ値を計算（勾配あり）
+        states_var = Variable(states)
+        q_values = self.qnet(states_var)  # (batch, action_size)
+
+        # 選択されたアクションのQ値を取得
+        # actions: (batch,) → one-hot化して掛け合わせる
+        action_masks = np.eye(self.action_size)[actions]  # (batch, action_size)
+        current_q = F.sum(q_values * Variable(action_masks.astype(np.float32)), axis=1)  # (batch,)
+
+        # MSE損失
+        targets_var = Variable(targets.astype(np.float32))
+        loss = F.mean_squared_error(current_q, targets_var)
+
+        # 勾配をクリアして逆伝播
+        self.qnet.cleargrads()
+        loss.backward()
+        self.optimizer.update()
+
+        # Target networkを定期的に更新
+        self.learn_step += 1
+        if self.learn_step % self.target_update_freq == 0:
+            self._sync_target()
+
+        # epsilon減衰
+        if self.epsilon > self.epsilon_min:
+            self.epsilon *= self.epsilon_decay
+
+        return float(loss.data_required)
+
+
+def train_dqn(num_episodes: int = 500, render: bool = False):
+    """DQNエージェントを学習"""
+    env = gym.make("CartPole-v1", render_mode="human" if render else None)
+    agent = DQNAgent()
+
+    episode_rewards = []
+    episode_losses = []
+
+    for episode in range(num_episodes):
+        observation, info = env.reset()
+        total_reward = 0
+        losses = []
+
+        while True:
+            action = agent.get_action(observation)
+            next_observation, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
+
+            # 経験を保存
+            agent.store(observation, action, reward, next_observation, done)
+
+            # Q-Networkを更新
+            loss = agent.update()
+            if loss is not None:
+                losses.append(loss)
+
+            total_reward += reward
+            observation = next_observation
+
+            if done:
+                break
+
+        episode_rewards.append(total_reward)
+        avg_loss = np.mean(losses) if losses else 0
+        episode_losses.append(avg_loss)
+
+        # 進捗を表示
+        if (episode + 1) % 10 == 0:
+            avg_reward = np.mean(episode_rewards[-10:])
+            print(f"Episode {episode + 1}: Reward = {total_reward:.0f}, "
+                  f"Avg(10) = {avg_reward:.1f}, Loss = {avg_loss:.4f}, "
+                  f"Epsilon = {agent.epsilon:.3f}")
+
+        # 早期終了（十分に学習できた場合）
+        if len(episode_rewards) >= 100 and np.mean(episode_rewards[-100:]) >= 475:
+            print(f"\nSolved in {episode + 1} episodes!")
+            break
+
+    env.close()
+    return episode_rewards, episode_losses, agent
+
+
+def evaluate_agent(agent: DQNAgent, num_episodes: int = 3):
+    """学習済みエージェントをrenderして評価"""
+    env = gym.make("CartPole-v1", render_mode="human")
+
+    for episode in range(num_episodes):
+        observation, _ = env.reset()
+        total_reward = 0
+
+        while True:
+            # 学習済みのQ-Networkで行動選択（greedyに）
+            state_var = Variable(observation.reshape(1, -1).astype(np.float32))
+            q_values = agent.qnet(state_var)
+            action = int(np.argmax(q_values.data_required[0]))
+
+            observation, reward, terminated, truncated, _ = env.step(action)
+            total_reward += reward
+
+            if terminated or truncated:
+                print(f"Evaluation Episode {episode + 1}: Reward = {total_reward:.0f}")
+                break
+
+    env.close()
+
+
+if __name__ == "__main__":
+    # DQNで学習
+    print("Training DQN Agent...")
+    rewards, losses, agent = train_dqn(num_episodes=500, render=False)
+
+    # 結果を表示
+    import matplotlib.pyplot as plt
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+
+    ax1.plot(rewards)
+    ax1.set_xlabel("Episode")
+    ax1.set_ylabel("Total Reward")
+    ax1.set_title("DQN: Episode Rewards")
+    ax1.grid(True)
+
+    ax2.plot(losses)
+    ax2.set_xlabel("Episode")
+    ax2.set_ylabel("Average Loss")
+    ax2.set_title("DQN: Average Loss per Episode")
+    ax2.grid(True)
+
+    plt.tight_layout()
+    plt.show()
+
+    # 学習済みエージェントで評価（render）
+    print("\nEvaluating trained agent...")
+    evaluate_agent(agent, num_episodes=3)
