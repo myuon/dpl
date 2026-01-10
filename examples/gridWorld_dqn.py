@@ -1,13 +1,19 @@
+# %% [markdown]
+# # GridWorld DQN
+# DQNを用いたGridWorldの学習
+
+# %% Imports
 import numpy as np
 
 import dpl.layers as L
 import dpl.functions as F
 from dpl import Variable
 from dpl.optimizers import Adam
-from dpl.agent_trainer import AgentTrainer, TrainResult
+from dpl.agent_trainer import AgentTrainer
 from dpl.agent import ReplayBuffer, BaseAgent
 
 
+# %% GridWorld Environment
 class GridWorld:
     """シンプルなGridWorld環境
 
@@ -129,6 +135,7 @@ class GridWorld:
         print("-" * (self.size * 2 + 1))
 
 
+# %% Q-Network
 class QNet(L.Sequential):
     """GridWorld用のQ-Network
 
@@ -150,6 +157,7 @@ class QNet(L.Sequential):
         self.action_size = action_size
 
 
+# %% DQN Agent
 class DQNAgent(BaseAgent):
     """Double DQN Agent for GridWorld
 
@@ -214,7 +222,7 @@ class DQNAgent(BaseAgent):
     def _soft_update_target(self):
         """Target networkをsoft updateで更新: θ' ← τθ + (1-τ)θ'"""
         for main_layer, target_layer in zip(self.qnet.layers, self.target_qnet.layers):
-            if isinstance(main_layer, L.Linear):
+            if isinstance(main_layer, L.Linear) and isinstance(target_layer, L.Linear):
                 target_layer.W.data = (
                     self.tau * main_layer.W.data + (1 - self.tau) * target_layer.W.data
                 )
@@ -305,9 +313,7 @@ class DQNAgent(BaseAgent):
         q_values = self.qnet(states_var)
 
         action_masks = np.eye(self.action_size)[actions]
-        current_q = F.sum(
-            q_values * Variable(action_masks.astype(np.float32)), axis=1
-        )
+        current_q = F.sum(q_values * Variable(action_masks.astype(np.float32)), axis=1)
 
         targets_var = Variable(targets.astype(np.float32))
         loss = F.mean_squared_error(current_q, targets_var)
@@ -334,36 +340,7 @@ class DQNAgent(BaseAgent):
             self.epsilon *= self.epsilon_decay
 
 
-def train_dqn(
-    num_episodes: int = 500, render: bool = False, eval_interval: int = 50
-) -> tuple[TrainResult, DQNAgent]:
-    """DQNエージェントをGridWorldで学習
-
-    Args:
-        num_episodes: 学習エピソード数
-        render: 学習中にrenderするか
-        eval_interval: 評価間隔（エピソード数）
-
-    Returns:
-        TrainResult と 学習済みエージェント
-    """
-    env = GridWorld()
-    eval_env = GridWorld()
-    agent = DQNAgent()
-
-    trainer = AgentTrainer(
-        env=env,
-        eval_env=eval_env,
-        agent=agent,
-        num_episodes=num_episodes,
-        eval_interval=eval_interval,
-        render=render,
-    )
-
-    result = trainer.train()
-    return result, agent
-
-
+# %% Evaluation Function
 def evaluate_agent(agent: DQNAgent, num_episodes: int = 3):
     """学習済みエージェントをrenderして評価"""
     env = GridWorld()
@@ -397,38 +374,208 @@ def evaluate_agent(agent: DQNAgent, num_episodes: int = 3):
                 break
 
 
-if __name__ == "__main__":
-    print("Training DQN Agent on GridWorld...")
-    result, agent = train_dqn(num_episodes=500, render=False)
+# %% Training
+print("Training DQN Agent on GridWorld...")
 
-    # 結果を表示
-    import matplotlib.pyplot as plt
+env = GridWorld()
+eval_env = GridWorld()
+agent = DQNAgent()
 
-    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 4))
+trainer = AgentTrainer(
+    env=env,
+    eval_env=eval_env,
+    agent=agent,
+    num_episodes=500,
+    eval_interval=50,
+)
 
-    ax1.plot(result.episode_rewards)
-    ax1.set_xlabel("Episode")
-    ax1.set_ylabel("Total Reward")
-    ax1.set_title("DQN: Episode Rewards (GridWorld)")
-    ax1.grid(True)
+result = trainer.train()
 
-    ax2.plot(result.episode_losses)
-    ax2.set_xlabel("Episode")
-    ax2.set_ylabel("Average Loss")
-    ax2.set_title("DQN: Average Loss per Episode")
-    ax2.grid(True)
+# %% Visualization
+import matplotlib.pyplot as plt
 
-    if result.eval_returns:
-        episodes, returns = zip(*result.eval_returns)
-        ax3.plot(episodes, returns, marker="o", markersize=8, linewidth=2)
-        ax3.set_xlabel("Episode")
-        ax3.set_ylabel("Eval Return")
-        ax3.set_title("DQN: Eval Return (ε=0, n=20)")
-        ax3.grid(True)
+fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 4))
+
+ax1.plot(result.episode_rewards)
+ax1.set_xlabel("Episode")
+ax1.set_ylabel("Total Reward")
+ax1.set_title("DQN: Episode Rewards (GridWorld)")
+ax1.grid(True)
+
+ax2.plot(result.episode_losses)
+ax2.set_xlabel("Episode")
+ax2.set_ylabel("Average Loss")
+ax2.set_title("DQN: Average Loss per Episode")
+ax2.grid(True)
+
+if result.eval_returns:
+    episodes, returns = zip(*result.eval_returns)
+    ax3.plot(episodes, returns, marker="o", markersize=8, linewidth=2)
+    ax3.set_xlabel("Episode")
+    ax3.set_ylabel("Eval Return")
+    ax3.set_title("DQN: Eval Return (ε=0, n=20)")
+    ax3.grid(True)
+
+plt.tight_layout()
+plt.show()
+
+
+# %% Q-Value Heatmap
+def plot_q_heatmap(agent: DQNAgent, grid_size: int = 5):
+    """各セルのQ値を4方向の三角形で可視化
+
+    各セルを対角線で4つの三角形に分割:
+    - 上: 上方向への移動のQ値
+    - 下: 下方向への移動のQ値
+    - 左: 左方向への移動のQ値
+    - 右: 右方向への移動のQ値
+    """
+    from matplotlib.patches import Polygon
+    import matplotlib.colors as mcolors
+
+    # 各セルのQ値を計算
+    q_values = np.zeros((grid_size, grid_size, 4))
+
+    for y in range(grid_size):
+        for x in range(grid_size):
+            state = np.array(
+                [x / (grid_size - 1), y / (grid_size - 1)], dtype=np.float32
+            )
+            state_var = Variable(state.reshape(1, -1))
+            q = agent.qnet(state_var).data_required[0]
+            q_values[y, x] = q
+
+    # 障害物とゴール
+    obstacles = {(1, 1), (2, 1), (3, 1), (1, 3), (2, 3)}
+    goal = (grid_size - 1, grid_size - 1)
+
+    # Q値の範囲を取得（カラーマップ用）
+    q_min = np.min(q_values)
+    q_max = np.max(q_values)
+    norm = mcolors.Normalize(vmin=q_min, vmax=q_max)
+    cmap = plt.get_cmap("RdYlGn")
+
+    _, ax = plt.subplots(figsize=(10, 10))
+
+    # 各セルに4つの三角形を描画
+    for y in range(grid_size):
+        for x in range(grid_size):
+            # セルの中心
+            cx, cy = x, y
+
+            # 4つの三角形の頂点（セルの角と中心）
+            # 上三角形 (action=0: 上)
+            top_tri = [(cx - 0.5, cy - 0.5), (cx + 0.5, cy - 0.5), (cx, cy)]
+            # 下三角形 (action=1: 下)
+            bottom_tri = [(cx - 0.5, cy + 0.5), (cx + 0.5, cy + 0.5), (cx, cy)]
+            # 左三角形 (action=2: 左)
+            left_tri = [(cx - 0.5, cy - 0.5), (cx - 0.5, cy + 0.5), (cx, cy)]
+            # 右三角形 (action=3: 右)
+            right_tri = [(cx + 0.5, cy - 0.5), (cx + 0.5, cy + 0.5), (cx, cy)]
+
+            triangles = [top_tri, bottom_tri, left_tri, right_tri]
+            action_labels = ["↑", "↓", "←", "→"]
+            # ラベルの位置オフセット
+            label_offsets = [(0, -0.25), (0, 0.25), (-0.25, 0), (0.25, 0)]
+
+            if (x, y) in obstacles:
+                # 障害物はグレーで塗りつぶし
+                for tri in triangles:
+                    poly = Polygon(
+                        tri, facecolor="gray", edgecolor="black", linewidth=0.5
+                    )
+                    ax.add_patch(poly)
+                ax.text(
+                    cx,
+                    cy,
+                    "#",
+                    ha="center",
+                    va="center",
+                    fontsize=14,
+                    fontweight="bold",
+                )
+            else:
+                # 各方向のQ値で色付け
+                for i, (tri, _, offset) in enumerate(
+                    zip(triangles, action_labels, label_offsets)
+                ):
+                    q_val = q_values[y, x, i]
+                    color = cmap(norm(q_val))
+                    poly = Polygon(
+                        tri, facecolor=color, edgecolor="black", linewidth=0.5
+                    )
+                    ax.add_patch(poly)
+
+                    # Q値を表示
+                    ax.text(
+                        cx + offset[0],
+                        cy + offset[1],
+                        f"{q_val:.2f}",
+                        ha="center",
+                        va="center",
+                        fontsize=7,
+                        color="black",
+                    )
+
+                # 最適行動を中央に表示
+                best_action = np.argmax(q_values[y, x])
+                ax.text(
+                    cx,
+                    cy,
+                    action_labels[best_action],
+                    ha="center",
+                    va="center",
+                    fontsize=12,
+                    fontweight="bold",
+                    color="blue",
+                )
+
+    # スタートとゴールをマーク
+    ax.text(
+        0,
+        0,
+        "S",
+        ha="center",
+        va="center",
+        fontsize=10,
+        color="red",
+        bbox=dict(boxstyle="circle", facecolor="white", edgecolor="red"),
+    )
+    ax.text(
+        goal[0],
+        goal[1],
+        "G",
+        ha="center",
+        va="center",
+        fontsize=10,
+        color="green",
+        bbox=dict(boxstyle="circle", facecolor="white", edgecolor="green"),
+    )
+
+    # グリッド線
+    for i in range(grid_size + 1):
+        ax.axhline(i - 0.5, color="black", linewidth=1)
+        ax.axvline(i - 0.5, color="black", linewidth=1)
+
+    ax.set_xlim(-0.5, grid_size - 0.5)
+    ax.set_ylim(grid_size - 0.5, -0.5)  # y軸を反転
+    ax.set_aspect("equal")
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    ax.set_title("Q-Values (each triangle = action direction)")
+
+    # カラーバー
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    plt.colorbar(sm, ax=ax, label="Q-value")
 
     plt.tight_layout()
     plt.show()
 
-    # 学習済みエージェントで評価（render）
-    print("\nEvaluating trained agent...")
-    evaluate_agent(agent, num_episodes=3)
+
+print("\nQ-Value Heatmap:")
+plot_q_heatmap(agent)
+
+# %% Evaluation
+print("\nEvaluating trained agent...")
+evaluate_agent(agent, num_episodes=3)
