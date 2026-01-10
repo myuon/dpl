@@ -9,17 +9,10 @@ from dpl import Variable
 from dpl.optimizers import Adam
 
 
-def huber_loss(pred: Variable, target: Variable, delta: float = 1.0) -> Variable:
-    """Huber loss: MSEより外れ値に強い
-
-    |error| <= delta: 0.5 * error^2
-    |error| > delta:  delta * (|error| - 0.5 * delta)
-    """
+def mse_loss(pred: Variable, target: Variable) -> Variable:
+    """Mean Squared Error loss (微分可能な実装)"""
     error = pred - target
-    abs_error = Variable(np.abs(error.data_required))
-    quadratic = Variable(np.minimum(abs_error.data_required, delta))
-    linear = abs_error - quadratic
-    loss = 0.5 * quadratic * quadratic + delta * linear
+    loss = error * error
     return F.sum(loss) / Variable(np.array(len(pred.data_required), dtype=np.float32))
 
 
@@ -74,7 +67,7 @@ class DQNAgent:
     - Experience Replay: 過去の経験をバッファに保存し、ミニバッチで学習
     - Target Network: 安定した学習のために定期的にコピー
     - Double DQN: action選択はqnet、Q値評価はtarget_qnetで行う
-    - Huber loss: MSEより外れ値に強い損失関数
+    - MSE loss
     - Gradient clipping: 勾配爆発を防ぐ
     - epsilon-greedy探索
     """
@@ -87,12 +80,12 @@ class DQNAgent:
         epsilon: float = 1.0,
         epsilon_min: float = 0.01,
         epsilon_decay: float = 0.995,
-        lr: float = 1e-4,  # 安定化のため小さめに
+        lr: float = 5e-4,
         batch_size: int = 64,
         buffer_size: int = 10000,
-        target_update_freq: int = 10,
-        hidden_size: int = 128,
-        grad_clip: float = 10.0,  # gradient clipping (global norm)
+        target_update_freq: int = 100,  # より頻繁にsync
+        hidden_size: int = 64,  # 小さめのネットワーク
+        grad_clip: float = 1.0,  # より厳しいgradient clipping
     ):
         self.state_size = state_size
         self.action_size = action_size
@@ -177,7 +170,8 @@ class DQNAgent:
         return int(np.argmax(q_values.data_required[0]))
 
     def store(self, state, action, reward, next_state, done):
-        """経験をバッファに保存"""
+        """経験をバッファに保存（rewardをclip）"""
+        reward = np.clip(reward, -1.0, 1.0)
         self.buffer.push(state, action, reward, next_state, done)
 
     def update(self) -> float | None:
@@ -214,9 +208,9 @@ class DQNAgent:
         action_masks = np.eye(self.action_size)[actions]  # (batch, action_size)
         current_q = F.sum(q_values * Variable(action_masks.astype(np.float32)), axis=1)  # (batch,)
 
-        # Huber loss（MSEより外れ値に強い）
+        # MSE loss
         targets_var = Variable(targets.astype(np.float32))
-        loss = huber_loss(current_q, targets_var)
+        loss = mse_loss(current_q, targets_var)
 
         # 勾配をクリアして逆伝播
         self.qnet.cleargrads()
