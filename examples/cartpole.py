@@ -85,11 +85,11 @@ class DQNAgent:
         lr: float = 5e-4,
         batch_size: int = 64,
         buffer_size: int = 10000,
-        tau: float = 0.0,  # soft update coefficient (use 0 for hard update)
+        tau: float = 0.005,  # soft update coefficient (use 0 for hard update)
         target_update_freq: int = 500,  # hard update frequency
         hidden_size: int = 64,
         grad_clip: float = 1.0,
-        warmup_steps: int = 500,  # warm-up before learning
+        warmup_steps: int = 1000,  # warm-up before learning
     ):
         self.state_size = state_size
         self.action_size = action_size
@@ -398,7 +398,7 @@ def evaluate_agent(agent: DQNAgent, num_episodes: int = 3):
 if __name__ == "__main__":
     # DQNで学習
     print("Training DQN Agent...")
-    rewards, losses, eval_returns, agent = train_dqn(num_episodes=500, render=False)
+    rewards, losses, eval_returns, agent = train_dqn(num_episodes=2000, render=False)
 
     # 結果を表示
     import matplotlib.pyplot as plt
