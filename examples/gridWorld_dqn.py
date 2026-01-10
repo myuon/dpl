@@ -782,7 +782,7 @@ class DQNAgent(BaseAgent):
         action_size: int = 4,
         gamma: float = 0.99,
         epsilon: float = 1.0,
-        epsilon_min: float = 0.05,
+        epsilon_min: float = 0.1,
         epsilon_decay: float = 0.995,  # per episode
         lr: float = 1e-3,
         batch_size: int = 32,
@@ -898,16 +898,28 @@ class DQNAgent(BaseAgent):
 
     def get_action(self, state: np.ndarray) -> int:
         """epsilon-greedy戦略でアクションを選択"""
-        if np.random.random() < self.epsilon:
-            return np.random.randint(self.action_size)
+        if isinstance(self.qnet, DRQN):
+            # DRQN: 常にstep()でLSTM状態を更新（ランダム行動でも）
+            q_values = self.qnet.step(state)
+            if np.random.random() < self.epsilon:
+                return np.random.randint(self.action_size)
+            return int(np.argmax(q_values))
         else:
+            if np.random.random() < self.epsilon:
+                return np.random.randint(self.action_size)
             return self._greedy_action(state)
 
     def act(self, state: np.ndarray, epsilon: float = 0.0) -> int:
         """指定したepsilonでアクションを選択"""
-        if np.random.random() < epsilon:
-            return np.random.randint(self.action_size)
+        if isinstance(self.qnet, DRQN):
+            # DRQN: 常にstep()でLSTM状態を更新（ランダム行動でも）
+            q_values = self.qnet.step(state)
+            if np.random.random() < epsilon:
+                return np.random.randint(self.action_size)
+            return int(np.argmax(q_values))
         else:
+            if np.random.random() < epsilon:
+                return np.random.randint(self.action_size)
             return self._greedy_action(state)
 
     def _greedy_action(self, state: np.ndarray) -> int:
@@ -1279,8 +1291,9 @@ trainer = AgentTrainer(
     env=env,
     eval_env=eval_env,
     agent=agent,
-    num_episodes=5000,
+    num_episodes=1500,
     eval_interval=50,
+    eval_n=200,
 )
 
 result = trainer.train()
@@ -1356,16 +1369,447 @@ def _get_state_for_pos(x: int, y: int, env: GridWorld) -> np.ndarray:
 def _get_q_values_for_pos(
     agent: DQNAgent, x: int, y: int, env: GridWorld
 ) -> np.ndarray:
-    """指定位置のQ値を取得（DRQN対応）"""
+    """指定位置のQ値を取得（非DRQN用）
+
+    注意: DRQNの場合は履歴なしでQ値を取得するため、
+    正確なQ値ではない。DRQNには collect_q_values_from_rollouts を使用すること。
+    """
     state = _get_state_for_pos(x, y, env)
     if isinstance(agent.qnet, DRQN):
-        # DRQN: (1, 1, obs_dim) 形式で入力、状態リセット
+        # DRQN: 履歴なしでQ値を取得（参考値のみ）
         agent.qnet.reset_state()
         state_var = Variable(state.reshape(1, 1, -1))
         return np.asarray(agent.qnet(state_var).data_required[0, 0])
     else:
         state_var = Variable(state.reshape(1, -1))
         return np.asarray(agent.qnet(state_var).data_required[0])
+
+
+def collect_q_values_from_rollouts(
+    agent: DQNAgent,
+    env: GridWorld | FrameStackEnv,
+    num_episodes: int = 20,
+) -> dict[tuple[int, int], list[np.ndarray]]:
+    """ロールアウトを実行して各セルでのQ値を収集（DRQN用）
+
+    greedyポリシーで複数エピソードを実行し、各マスに到達した瞬間の
+    LSTM hidden state h_t でのQ値を収集する。
+
+    Args:
+        agent: DQNAgent（DRQN qnetを持つ）
+        env: 環境（GridWorld or FrameStackEnv）
+        num_episodes: 収集するエピソード数
+
+    Returns:
+        位置 (x, y) -> Q値リスト [(action_size,), ...] の辞書
+    """
+    assert isinstance(agent.qnet, DRQN), "This function is for DRQN only"
+
+    # ベース環境を取得
+    base_env = env.env if isinstance(env, FrameStackEnv) else env
+
+    # 位置 -> Q値リストの辞書
+    q_values_by_pos: dict[tuple[int, int], list[np.ndarray]] = {}
+
+    for _ in range(num_episodes):
+        observation = env.reset()
+        agent.reset_state()  # LSTM状態をリセット
+
+        done = False
+        while not done:
+            # 現在位置
+            pos: tuple[int, int] = (base_env.agent_pos[0], base_env.agent_pos[1])
+
+            # step()でQ値を取得（LSTM状態が更新される）
+            q_values = agent.qnet.step(observation)
+
+            # Q値を記録
+            if pos not in q_values_by_pos:
+                q_values_by_pos[pos] = []
+            q_values_by_pos[pos].append(q_values.copy())
+
+            # greedy action
+            action = int(np.argmax(q_values))
+
+            observation, _, terminated, truncated, _ = env.step(action)
+            done = terminated or truncated
+
+    return q_values_by_pos
+
+
+def aggregate_q_values(
+    q_values_by_pos: dict[tuple[int, int], list[np.ndarray]],
+    method: str = "mean",
+) -> dict[tuple[int, int], np.ndarray]:
+    """位置ごとのQ値リストを集約する
+
+    Args:
+        q_values_by_pos: 位置 -> Q値リストの辞書
+        method: 集約方法 ("mean", "median", "last")
+
+    Returns:
+        位置 -> 集約されたQ値 (action_size,) の辞書
+    """
+    result: dict[tuple[int, int], np.ndarray] = {}
+
+    for pos, q_list in q_values_by_pos.items():
+        q_array = np.array(q_list)  # (N, action_size)
+        if method == "mean":
+            result[pos] = np.mean(q_array, axis=0)
+        elif method == "median":
+            result[pos] = np.median(q_array, axis=0)
+        elif method == "last":
+            result[pos] = q_list[-1]
+        else:
+            raise ValueError(f"Unknown method: {method}")
+
+    return result
+
+
+# %% Q-Value Heatmap (DRQN version)
+def plot_q_heatmap_drqn(
+    env: GridWorld | FrameStackEnv,
+    q_values_by_pos: dict[tuple[int, int], np.ndarray],
+):
+    """DRQN用: ロールアウトで収集したQ値を4方向の三角形で可視化
+
+    Args:
+        env: 環境
+        q_values_by_pos: 位置 -> 集約済みQ値 (action_size,) の辞書
+    """
+    from matplotlib.patches import Polygon
+    import matplotlib.colors as mcolors
+
+    # ベース環境を取得
+    base_env = env.env if isinstance(env, FrameStackEnv) else env
+    width = base_env.width
+    height = base_env.height
+    obstacles = base_env.obstacles
+    goal = base_env.goal
+    start = base_env.start
+
+    # Q値の範囲を取得（カラーマップ用）
+    all_q_values = list(q_values_by_pos.values())
+    if not all_q_values:
+        print("No Q values collected from rollouts")
+        return
+
+    q_min = min(np.min(q) for q in all_q_values)
+    q_max = max(np.max(q) for q in all_q_values)
+    norm = mcolors.Normalize(vmin=q_min, vmax=q_max)
+    cmap = plt.get_cmap("RdYlGn")
+
+    _, ax = plt.subplots(figsize=(12, 10))
+
+    # 各セルに4つの三角形を描画
+    for y in range(height):
+        for x in range(width):
+            # セルの中心
+            cx, cy = x, y
+
+            # 4つの三角形の頂点（セルの角と中心）
+            top_tri = [(cx - 0.5, cy - 0.5), (cx + 0.5, cy - 0.5), (cx, cy)]
+            bottom_tri = [(cx - 0.5, cy + 0.5), (cx + 0.5, cy + 0.5), (cx, cy)]
+            left_tri = [(cx - 0.5, cy - 0.5), (cx - 0.5, cy + 0.5), (cx, cy)]
+            right_tri = [(cx + 0.5, cy - 0.5), (cx + 0.5, cy + 0.5), (cx, cy)]
+
+            triangles = [top_tri, bottom_tri, left_tri, right_tri]
+            label_offsets = [(0, -0.25), (0, 0.25), (-0.25, 0), (0.25, 0)]
+
+            if (x, y) in obstacles:
+                # 障害物はグレーで塗りつぶし
+                for tri in triangles:
+                    poly = Polygon(
+                        tri, facecolor="gray", edgecolor="black", linewidth=0.5
+                    )
+                    ax.add_patch(poly)
+                ax.text(
+                    cx,
+                    cy,
+                    "#",
+                    ha="center",
+                    va="center",
+                    fontsize=14,
+                    fontweight="bold",
+                )
+            elif (x, y) in q_values_by_pos:
+                # ロールアウトで訪問したセル
+                q_vals = q_values_by_pos[(x, y)]
+                for i, (tri, offset) in enumerate(zip(triangles, label_offsets)):
+                    q_val = q_vals[i]
+                    color = cmap(norm(q_val))
+                    poly = Polygon(
+                        tri, facecolor=color, edgecolor="black", linewidth=0.5
+                    )
+                    ax.add_patch(poly)
+                    ax.text(
+                        cx + offset[0],
+                        cy + offset[1],
+                        f"{q_val:.2f}",
+                        ha="center",
+                        va="center",
+                        fontsize=6,
+                        color="black",
+                    )
+            else:
+                # 未訪問セルは白
+                for tri in triangles:
+                    poly = Polygon(
+                        tri, facecolor="white", edgecolor="lightgray", linewidth=0.5
+                    )
+                    ax.add_patch(poly)
+                ax.text(
+                    cx,
+                    cy,
+                    "?",
+                    ha="center",
+                    va="center",
+                    fontsize=10,
+                    color="lightgray",
+                )
+
+    # スタートとゴールをマーク
+    ax.text(
+        start[0],
+        start[1],
+        "S",
+        ha="center",
+        va="center",
+        fontsize=10,
+        color="red",
+        bbox=dict(boxstyle="circle", facecolor="white", edgecolor="red"),
+    )
+    ax.text(
+        goal[0],
+        goal[1],
+        "G",
+        ha="center",
+        va="center",
+        fontsize=10,
+        color="green",
+        bbox=dict(boxstyle="circle", facecolor="white", edgecolor="green"),
+    )
+
+    # グリッド線
+    for i in range(height + 1):
+        ax.axhline(i - 0.5, color="black", linewidth=1)
+    for i in range(width + 1):
+        ax.axvline(i - 0.5, color="black", linewidth=1)
+
+    ax.set_xlim(-0.5, width - 0.5)
+    ax.set_ylim(height - 0.5, -0.5)  # y軸を反転
+    ax.set_aspect("equal")
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    ax.set_title("DRQN Q-Values (from rollouts with LSTM history)")
+
+    # カラーバー
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    plt.colorbar(sm, ax=ax, label="Q-value")
+
+    plt.tight_layout()
+    plt.show()
+
+
+# %% Value and Policy (DRQN version)
+def plot_value_and_policy_drqn(
+    env: GridWorld | FrameStackEnv,
+    q_values_by_pos: dict[tuple[int, int], np.ndarray],
+):
+    """DRQN用: ロールアウトで収集したQ値からV(s)とπ(s)を可視化
+
+    Args:
+        env: 環境
+        q_values_by_pos: 位置 -> 集約済みQ値 (action_size,) の辞書
+    """
+    from matplotlib.patches import Rectangle
+    import matplotlib.colors as mcolors
+
+    # ベース環境を取得
+    base_env = env.env if isinstance(env, FrameStackEnv) else env
+    width = base_env.width
+    height = base_env.height
+    obstacles = base_env.obstacles
+    goal = base_env.goal
+    start = base_env.start
+
+    if not q_values_by_pos:
+        print("No Q values collected from rollouts")
+        return
+
+    # V(s) = max_a Q(s, a) と best action を計算
+    v_values: dict[tuple[int, int], float] = {}
+    best_actions: dict[tuple[int, int], int] = {}
+
+    for pos, q_vals in q_values_by_pos.items():
+        v_values[pos] = float(np.max(q_vals))
+        best_actions[pos] = int(np.argmax(q_vals))
+
+    # 行動に対応する矢印のオフセット
+    arrow_directions = {
+        0: (0, -0.3),  # 上
+        1: (0, 0.3),  # 下
+        2: (-0.3, 0),  # 左
+        3: (0.3, 0),  # 右
+    }
+
+    _, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+
+    # === 左: Value Heatmap ===
+    v_list = list(v_values.values())
+    v_min = min(v_list)
+    v_max = max(v_list)
+    norm = mcolors.Normalize(vmin=v_min, vmax=v_max)
+    cmap = plt.get_cmap("RdYlGn")
+
+    for y in range(height):
+        for x in range(width):
+            if (x, y) in obstacles:
+                color = "gray"
+                rect = Rectangle(
+                    (x - 0.5, y - 0.5),
+                    1,
+                    1,
+                    facecolor=color,
+                    edgecolor="black",
+                    linewidth=0.5,
+                )
+                ax1.add_patch(rect)
+            elif (x, y) in v_values:
+                v = v_values[(x, y)]
+                color = cmap(norm(v))
+                rect = Rectangle(
+                    (x - 0.5, y - 0.5),
+                    1,
+                    1,
+                    facecolor=color,
+                    edgecolor="black",
+                    linewidth=0.5,
+                )
+                ax1.add_patch(rect)
+                ax1.text(
+                    x,
+                    y,
+                    f"{v:.2f}",
+                    ha="center",
+                    va="center",
+                    fontsize=7,
+                    color="black",
+                )
+            else:
+                # 未訪問
+                rect = Rectangle(
+                    (x - 0.5, y - 0.5),
+                    1,
+                    1,
+                    facecolor="white",
+                    edgecolor="lightgray",
+                    linewidth=0.5,
+                )
+                ax1.add_patch(rect)
+                ax1.text(
+                    x, y, "?", ha="center", va="center", fontsize=10, color="lightgray"
+                )
+
+    # スタートとゴール
+    ax1.text(
+        start[0],
+        start[1],
+        "S",
+        ha="center",
+        va="center",
+        fontsize=10,
+        color="red",
+        bbox=dict(boxstyle="circle", facecolor="white", edgecolor="red"),
+    )
+    ax1.text(
+        goal[0],
+        goal[1],
+        "G",
+        ha="center",
+        va="center",
+        fontsize=10,
+        color="green",
+        bbox=dict(boxstyle="circle", facecolor="white", edgecolor="green"),
+    )
+
+    ax1.set_xlim(-0.5, width - 0.5)
+    ax1.set_ylim(height - 0.5, -0.5)
+    ax1.set_aspect("equal")
+    ax1.set_xlabel("x")
+    ax1.set_ylabel("y")
+    ax1.set_title("DRQN V(s) = max_a Q(h_t, a) (from rollouts)")
+
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    plt.colorbar(sm, ax=ax1, label="V(s)")
+
+    # === 右: Policy Arrows ===
+    for y in range(height):
+        for x in range(width):
+            if (x, y) in obstacles:
+                color = "gray"
+            elif (x, y) in best_actions:
+                color = "lightgreen"
+            else:
+                color = "white"
+
+            rect = Rectangle(
+                (x - 0.5, y - 0.5),
+                1,
+                1,
+                facecolor=color,
+                edgecolor="black",
+                linewidth=0.5,
+            )
+            ax2.add_patch(rect)
+
+            if (x, y) in best_actions and (x, y) != goal:
+                action = best_actions[(x, y)]
+                dx, dy = arrow_directions[action]
+                ax2.arrow(
+                    x,
+                    y,
+                    dx,
+                    dy,
+                    head_width=0.15,
+                    head_length=0.1,
+                    fc="darkblue",
+                    ec="darkblue",
+                )
+
+    # スタートとゴール
+    ax2.text(
+        start[0],
+        start[1],
+        "S",
+        ha="center",
+        va="center",
+        fontsize=10,
+        color="red",
+        bbox=dict(boxstyle="circle", facecolor="white", edgecolor="red"),
+    )
+    ax2.text(
+        goal[0],
+        goal[1],
+        "G",
+        ha="center",
+        va="center",
+        fontsize=10,
+        color="green",
+        bbox=dict(boxstyle="circle", facecolor="white", edgecolor="green"),
+    )
+
+    ax2.set_xlim(-0.5, width - 0.5)
+    ax2.set_ylim(height - 0.5, -0.5)
+    ax2.set_aspect("equal")
+    ax2.set_xlabel("x")
+    ax2.set_ylabel("y")
+    ax2.set_title("DRQN Policy π(s) = argmax_a Q(h_t, a) (from rollouts)")
+
+    plt.tight_layout()
+    plt.show()
 
 
 # %% Q-Value Heatmap
@@ -1506,8 +1950,19 @@ def plot_q_heatmap(agent: DQNAgent, env: GridWorld):
     plt.show()
 
 
+# DRQN用のQ値収集（可視化で使い回す）
+q_by_pos: dict[tuple[int, int], np.ndarray] | None = None
+if NETWORK_TYPE == "drqn":
+    print("\nCollecting Q-values from rollouts (DRQN)...")
+    q_by_pos_raw = collect_q_values_from_rollouts(agent, env, num_episodes=20)
+    q_by_pos = aggregate_q_values(q_by_pos_raw, method="mean")
+    print(f"Collected Q-values for {len(q_by_pos)} positions")
+
 print("\nQ-Value Heatmap:")
-plot_q_heatmap(agent, base_env)
+if NETWORK_TYPE == "drqn" and q_by_pos is not None:
+    plot_q_heatmap_drqn(env, q_by_pos)
+else:
+    plot_q_heatmap(agent, base_env)
 
 
 # %% Value Heatmap and Policy
@@ -1998,7 +2453,11 @@ def plot_dueling_analysis(agent: DQNAgent, env: GridWorld):
 
 
 print("\nValue and Policy:")
-plot_value_and_policy(agent, base_env)
+if NETWORK_TYPE == "drqn" and q_by_pos is not None:
+    # DRQN: 既に収集済みのQ値を使用
+    plot_value_and_policy_drqn(env, q_by_pos)
+else:
+    plot_value_and_policy(agent, base_env)
 
 if NETWORK_TYPE == "dueling_dqn":
     print("\nDueling DQN: Advantage & Gap Analysis:")
