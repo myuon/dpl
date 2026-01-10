@@ -120,9 +120,20 @@ class DQNAgent:
         if np.random.random() < self.epsilon:
             return np.random.randint(self.action_size)
         else:
-            state_var = Variable(state.reshape(1, -1).astype(np.float32))
-            q_values = self.qnet(state_var)
-            return int(np.argmax(q_values.data_required[0]))
+            return self._greedy_action(state)
+
+    def act(self, state: np.ndarray, epsilon: float = 0.0) -> int:
+        """指定したepsilonでアクションを選択"""
+        if np.random.random() < epsilon:
+            return np.random.randint(self.action_size)
+        else:
+            return self._greedy_action(state)
+
+    def _greedy_action(self, state: np.ndarray) -> int:
+        """Q値が最大のアクションを選択"""
+        state_var = Variable(state.reshape(1, -1).astype(np.float32))
+        q_values = self.qnet(state_var)
+        return int(np.argmax(q_values.data_required[0]))
 
     def store(self, state, action, reward, next_state, done):
         """経験をバッファに保存"""
@@ -176,22 +187,30 @@ class DQNAgent:
         return float(loss.data_required)
 
 
-def train_dqn(num_episodes: int = 500, render: bool = False):
-    """DQNエージェントを学習"""
+def train_dqn(num_episodes: int = 500, render: bool = False, eval_interval: int = 100):
+    """DQNエージェントを学習
+
+    Args:
+        num_episodes: 学習エピソード数
+        render: 学習中にrenderするか
+        eval_interval: 評価間隔（エピソード数）
+    """
     env = gym.make("CartPole-v1", render_mode="human" if render else None)
+    eval_env = gym.make("CartPole-v1")  # 評価用環境
     agent = DQNAgent()
 
     episode_rewards = []
     episode_losses = []
+    eval_returns = []  # (episode, eval_return) のリスト
 
     for episode in range(num_episodes):
-        observation, info = env.reset()
+        observation, _ = env.reset()
         total_reward = 0
         losses = []
 
         while True:
             action = agent.get_action(observation)
-            next_observation, reward, terminated, truncated, info = env.step(action)
+            next_observation, reward, terminated, truncated, _ = env.step(action)
             done = terminated or truncated
 
             # 経験を保存
@@ -219,13 +238,49 @@ def train_dqn(num_episodes: int = 500, render: bool = False):
                   f"Avg(10) = {avg_reward:.1f}, Loss = {avg_loss:.4f}, "
                   f"Epsilon = {agent.epsilon:.3f}")
 
+        # 評価returnを計測
+        if (episode + 1) % eval_interval == 0:
+            eval_return = eval_cartpole(agent, eval_env, n=20)
+            eval_returns.append((episode + 1, eval_return))
+            print(f"  → Eval Return (n=20): {eval_return:.1f}")
+
         # 早期終了（十分に学習できた場合）
         if len(episode_rewards) >= 100 and np.mean(episode_rewards[-100:]) >= 475:
             print(f"\nSolved in {episode + 1} episodes!")
+            # 最終評価
+            eval_return = eval_cartpole(agent, eval_env, n=20)
+            eval_returns.append((episode + 1, eval_return))
+            print(f"  → Final Eval Return (n=20): {eval_return:.1f}")
             break
 
     env.close()
-    return episode_rewards, episode_losses, agent
+    eval_env.close()
+    return episode_rewards, episode_losses, eval_returns, agent
+
+
+def eval_cartpole(agent: DQNAgent, env, n: int = 20) -> float:
+    """評価return: ε=0で複数エピソード実行し平均rewardを返す
+
+    Args:
+        agent: 評価するエージェント
+        env: CartPole環境
+        n: 評価エピソード数
+
+    Returns:
+        平均reward
+    """
+    rs = []
+    for _ in range(n):
+        s, _ = env.reset()
+        done = False
+        total = 0
+        while not done:
+            a = agent.act(s, epsilon=0.0)
+            s, r, terminated, truncated, _ = env.step(a)
+            done = terminated or truncated
+            total += r
+        rs.append(total)
+    return float(np.mean(rs))
 
 
 def evaluate_agent(agent: DQNAgent, num_episodes: int = 3):
@@ -255,12 +310,12 @@ def evaluate_agent(agent: DQNAgent, num_episodes: int = 3):
 if __name__ == "__main__":
     # DQNで学習
     print("Training DQN Agent...")
-    rewards, losses, agent = train_dqn(num_episodes=500, render=False)
+    rewards, losses, eval_returns, agent = train_dqn(num_episodes=500, render=False)
 
     # 結果を表示
     import matplotlib.pyplot as plt
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 4))
 
     ax1.plot(rewards)
     ax1.set_xlabel("Episode")
@@ -273,6 +328,17 @@ if __name__ == "__main__":
     ax2.set_ylabel("Average Loss")
     ax2.set_title("DQN: Average Loss per Episode")
     ax2.grid(True)
+
+    # 評価returnをプロット
+    if eval_returns:
+        episodes, returns = zip(*eval_returns)
+        ax3.plot(episodes, returns, marker="o", markersize=8, linewidth=2)
+        ax3.set_xlabel("Episode")
+        ax3.set_ylabel("Eval Return")
+        ax3.set_title("DQN: Eval Return (ε=0, n=20)")
+        ax3.grid(True)
+        ax3.axhline(y=500, color="r", linestyle="--", label="Max (500)")
+        ax3.legend()
 
     plt.tight_layout()
     plt.show()
