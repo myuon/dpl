@@ -10,7 +10,7 @@ import dpl.layers as L
 import dpl.functions as F
 from dpl import Variable
 from dpl.optimizers import Adam
-from dpl.agent_trainer import AgentTrainer
+from dpl.agent_trainer import AgentTrainer, Env
 from dpl.agent import ReplayBuffer, BaseAgent
 
 
@@ -90,7 +90,7 @@ print(f"Size: {width}x{height}")
 
 
 # %% GridWorld Environment
-class GridWorld:
+class GridWorld(Env):
     """シンプルなGridWorld環境
 
     ASCIIマップからグリッドを生成し、エージェントがスタート地点からゴール地点まで移動する。
@@ -113,14 +113,18 @@ class GridWorld:
         ascii_map: str = MAP_ASCII,
         max_steps: int = 200,
         random_start: bool = False,
+        corner_start: bool = False,
+        max_visit_count: int = 30,
     ):
         start, goal, obstacles, width, height = parse_grid_map(ascii_map)
 
         self.width = width
         self.height = height
         self.max_steps = max_steps
+        self.max_visit_count = max_visit_count  # 同一セル訪問回数の閾値
         self.action_space_n = 4  # 上下左右
-        self.random_start = random_start  # デフォルトのスタート位置設定
+        self.random_start = random_start  # ランダムスタート
+        self.corner_start = corner_start  # 四隅からスタート
 
         self.obstacles = obstacles
         self.goal = goal
@@ -140,9 +144,25 @@ class GridWorld:
     def reset(self) -> np.ndarray:
         """環境をリセット
 
-        random_startはインスタンス生成時に設定されたデフォルト値を使用する。
+        スタート位置の優先順位: corner_start > random_start > 固定start
         """
-        if self.random_start:
+        if self.corner_start:
+            # 四隅から有効な位置を選択
+            corners = [
+                (0, 0),
+                (self.width - 1, 0),
+                (0, self.height - 1),
+                (self.width - 1, self.height - 1),
+            ]
+            valid_corners = [
+                c for c in corners if c not in self.obstacles and c != self.goal
+            ]
+            if valid_corners:
+                start_pos = valid_corners[np.random.randint(len(valid_corners))]
+            else:
+                start_pos = self.start  # フォールバック
+            self.agent_pos = list(start_pos)
+        elif self.random_start:
             # 有効なスタート位置を収集
             valid_positions = []
             for y in range(self.height):
@@ -155,6 +175,10 @@ class GridWorld:
         else:
             self.agent_pos = list(self.start)
         self.steps = 0
+        self.visit_counts: dict[tuple[int, int], int] = {}  # 訪問回数カウンタ
+        # 初期位置を訪問済みとしてカウント
+        pos: tuple[int, int] = (self.agent_pos[0], self.agent_pos[1])
+        self.visit_counts[pos] = 1
         return self._get_state()
 
     def _get_state(self) -> np.ndarray:
@@ -210,7 +234,7 @@ class GridWorld:
             observation: 新しい状態
             reward: 報酬
             terminated: ゴール到達でTrue
-            truncated: 最大ステップ数超過でTrue
+            truncated: 最大ステップ数超過 or 同一セル訪問回数超過でTrue
             info: 追加情報
         """
         self.steps += 1
@@ -236,6 +260,10 @@ class GridWorld:
         else:
             self.agent_pos = new_pos
 
+        # 訪問回数をカウント
+        pos: tuple[int, int] = (self.agent_pos[0], self.agent_pos[1])
+        self.visit_counts[pos] = self.visit_counts.get(pos, 0) + 1
+
         # 報酬計算
         reward = -0.01  # ステップペナルティ
         if hit_wall:
@@ -246,8 +274,11 @@ class GridWorld:
         if terminated:
             reward = 1.0
 
-        # 最大ステップ超過
-        truncated = self.steps >= self.max_steps
+        # 最大ステップ超過 or 同一セル訪問回数超過
+        truncated = (
+            self.steps >= self.max_steps
+            or self.visit_counts[pos] >= self.max_visit_count
+        )
 
         return self._get_state(), reward, terminated, truncated, {}
 
@@ -704,7 +735,7 @@ def _plot_visited_policy(
 print("Training DQN Agent on GridWorld...")
 
 # ベース環境を作成
-base_env = GridWorld(random_start=False)  # トレーニングは固定スタート
+base_env = GridWorld(corner_start=True)  # トレーニングは四隅からスタート
 base_eval_env = GridWorld(random_start=True)  # 評価はランダムスタート（汎化性能を確認）
 
 # FrameStackでラップ（FRAME_STACK > 1 の場合）
@@ -724,7 +755,7 @@ trainer = AgentTrainer(
     env=env,
     eval_env=eval_env,
     agent=agent,
-    num_episodes=1500,
+    num_episodes=1000,
     eval_interval=50,
 )
 
