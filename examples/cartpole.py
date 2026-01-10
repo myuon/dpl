@@ -78,14 +78,16 @@ class DQNAgent:
         action_size: int = 2,
         gamma: float = 0.99,
         epsilon: float = 1.0,
-        epsilon_min: float = 0.01,
-        epsilon_decay: float = 0.995,
+        epsilon_min: float = 0.05,
+        epsilon_decay: float = 0.995,  # per episode
         lr: float = 5e-4,
         batch_size: int = 64,
         buffer_size: int = 10000,
-        target_update_freq: int = 100,  # より頻繁にsync
-        hidden_size: int = 64,  # 小さめのネットワーク
-        grad_clip: float = 1.0,  # より厳しいgradient clipping
+        tau: float = 0.0,  # soft update coefficient (use 0 for hard update)
+        target_update_freq: int = 500,  # hard update frequency
+        hidden_size: int = 64,
+        grad_clip: float = 1.0,
+        warmup_steps: int = 500,  # warm-up before learning
     ):
         self.state_size = state_size
         self.action_size = action_size
@@ -94,8 +96,10 @@ class DQNAgent:
         self.epsilon_min = epsilon_min
         self.epsilon_decay = epsilon_decay
         self.batch_size = batch_size
+        self.tau = tau
         self.target_update_freq = target_update_freq
         self.grad_clip = grad_clip
+        self.warmup_steps = warmup_steps
 
         # Q-Network
         self.qnet = QNet(state_size, action_size, hidden_size)
@@ -107,7 +111,7 @@ class DQNAgent:
         self.target_qnet(dummy_input)
 
         # Target networkを初期化
-        self._sync_target()
+        self._hard_update_target()
 
         # Optimizer
         self.optimizer = Adam(lr=lr).setup(self.qnet)
@@ -118,9 +122,20 @@ class DQNAgent:
         # 学習ステップカウンタ
         self.learn_step = 0
 
-    def _sync_target(self):
-        """Target networkをメインnetworkで同期"""
-        # 重みをコピー
+    def _soft_update_target(self):
+        """Target networkをsoft updateで更新: θ' ← τθ + (1-τ)θ'"""
+        for main_layer, target_layer in zip(self.qnet.layers, self.target_qnet.layers):
+            if isinstance(main_layer, L.Linear):
+                target_layer.W.data = (
+                    self.tau * main_layer.W.data + (1 - self.tau) * target_layer.W.data
+                )
+                if main_layer.b is not None:
+                    target_layer.b.data = (
+                        self.tau * main_layer.b.data + (1 - self.tau) * target_layer.b.data
+                    )
+
+    def _hard_update_target(self):
+        """Target networkをメインnetworkで完全に同期"""
         for main_layer, target_layer in zip(self.qnet.layers, self.target_qnet.layers):
             if isinstance(main_layer, L.Linear):
                 target_layer.W.data = main_layer.W.data.copy()
@@ -170,16 +185,18 @@ class DQNAgent:
         return int(np.argmax(q_values.data_required[0]))
 
     def store(self, state, action, reward, next_state, done):
-        """経験をバッファに保存（rewardをclip）"""
-        reward = np.clip(reward, -1.0, 1.0)
+        """経験をバッファに保存"""
         self.buffer.push(state, action, reward, next_state, done)
 
     def update(self) -> float | None:
         """ミニバッチでQ-Networkを更新
 
         Returns:
-            loss値（バッファが足りない場合はNone）
+            loss値（バッファが足りない場合やwarmup中はNone）
         """
+        # Warm-up: 十分な経験が貯まるまで学習しない
+        if len(self.buffer) < self.warmup_steps:
+            return None
         if len(self.buffer) < self.batch_size:
             return None
 
@@ -221,10 +238,15 @@ class DQNAgent:
 
         self.optimizer.update()
 
-        # Target networkを定期的に更新
+        # Target networkを更新
         self.learn_step += 1
-        if self.learn_step % self.target_update_freq == 0:
-            self._sync_target()
+        if self.tau > 0:
+            # Soft update（毎ステップ）
+            self._soft_update_target()
+        else:
+            # Hard update（一定間隔）
+            if self.learn_step % self.target_update_freq == 0:
+                self._hard_update_target()
 
         return float(loss.data_required)
 
