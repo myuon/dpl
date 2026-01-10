@@ -23,7 +23,9 @@ class QNet(L.Sequential):
     出力: 各アクションのQ値(2次元: 左、右)
     """
 
-    def __init__(self, state_size: int = 4, action_size: int = 2, hidden_size: int = 128):
+    def __init__(
+        self, state_size: int = 4, action_size: int = 2, hidden_size: int = 128
+    ):
         super().__init__(
             L.Linear(hidden_size),
             F.relu,
@@ -131,7 +133,8 @@ class DQNAgent:
                 )
                 if main_layer.b is not None:
                     target_layer.b.data = (
-                        self.tau * main_layer.b.data + (1 - self.tau) * target_layer.b.data
+                        self.tau * main_layer.b.data
+                        + (1 - self.tau) * target_layer.b.data
                     )
 
     def _hard_update_target(self):
@@ -155,7 +158,7 @@ class DQNAgent:
 
         # Global normを計算
         all_grads = np.concatenate(grads)
-        global_norm = np.sqrt(np.sum(all_grads ** 2))
+        global_norm = np.sqrt(np.sum(all_grads**2))
 
         # Clipping
         if global_norm > self.grad_clip:
@@ -201,7 +204,9 @@ class DQNAgent:
             return None
 
         # バッファからサンプリング
-        states, actions, rewards, next_states, dones = self.buffer.sample(self.batch_size)
+        states, actions, rewards, next_states, dones = self.buffer.sample(
+            self.batch_size
+        )
 
         # Double DQN: action選択はqnet、Q値評価はtarget_qnetで行う
         next_states_var = Variable(next_states)
@@ -211,8 +216,12 @@ class DQNAgent:
         best_actions = np.argmax(next_q_main, axis=1)  # (batch,)
 
         # ターゲットネットワークでQ値評価
-        next_q_target = self.target_qnet(next_states_var).data_required  # (batch, action_size)
-        max_next_q = next_q_target[np.arange(len(best_actions)), best_actions]  # (batch,)
+        next_q_target = self.target_qnet(
+            next_states_var
+        ).data_required  # (batch, action_size)
+        max_next_q = next_q_target[
+            np.arange(len(best_actions)), best_actions
+        ]  # (batch,)
 
         targets = rewards + self.gamma * max_next_q * (1 - dones)  # (batch,)
 
@@ -223,7 +232,9 @@ class DQNAgent:
         # 選択されたアクションのQ値を取得
         # actions: (batch,) → one-hot化して掛け合わせる
         action_masks = np.eye(self.action_size)[actions]  # (batch, action_size)
-        current_q = F.sum(q_values * Variable(action_masks.astype(np.float32)), axis=1)  # (batch,)
+        current_q = F.sum(
+            q_values * Variable(action_masks.astype(np.float32)), axis=1
+        )  # (batch,)
 
         # MSE loss
         targets_var = Variable(targets.astype(np.float32))
@@ -309,9 +320,11 @@ def train_dqn(num_episodes: int = 500, render: bool = False, eval_interval: int 
         # 進捗を表示
         if (episode + 1) % 10 == 0:
             avg_reward = np.mean(episode_rewards[-10:])
-            print(f"Episode {episode + 1}: Reward = {total_reward:.0f}, "
-                  f"Avg(10) = {avg_reward:.1f}, Loss = {avg_loss:.4f}, "
-                  f"Epsilon = {agent.epsilon:.3f}")
+            print(
+                f"Episode {episode + 1}: Reward = {total_reward:.0f}, "
+                f"Avg(10) = {avg_reward:.1f}, Loss = {avg_loss:.4f}, "
+                f"Epsilon = {agent.epsilon:.3f}"
+            )
 
         # 評価returnを計測
         if (episode + 1) % eval_interval == 0:
