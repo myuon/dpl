@@ -13,11 +13,76 @@ from dpl.agent_trainer import AgentTrainer
 from dpl.agent import ReplayBuffer, BaseAgent
 
 
+# %% Map Parser
+def parse_grid_map(
+    ascii_map: str,
+) -> tuple[tuple[int, int], tuple[int, int], set[tuple[int, int]], int, int]:
+    """ASCII形式のマップ文字列をパースする
+
+    Args:
+        ascii_map: 改行区切りのASCII文字列
+            S: スタート
+            G: ゴール
+            #: 障害物
+            .: 通行可能
+
+    Returns:
+        (start, goal, obstacles, width, height)
+    """
+    lines = [line.strip() for line in ascii_map.strip().split("\n")]
+    height = len(lines)
+
+    start = None
+    goal = None
+    obstacles: set[tuple[int, int]] = set()
+
+    for y, line in enumerate(lines):
+        # スペース区切りでセルを分割
+        cells = line.split()
+        width = len(cells)
+
+        for x, cell in enumerate(cells):
+            if cell == "S":
+                start = (x, y)
+            elif cell == "G":
+                goal = (x, y)
+            elif cell == "#":
+                obstacles.add((x, y))
+
+    if start is None:
+        raise ValueError("Start position 'S' not found in map")
+    if goal is None:
+        raise ValueError("Goal position 'G' not found in map")
+
+    # 最初の行の幅を基準にする
+    width = len(lines[0].split())
+
+    return start, goal, obstacles, width, height
+
+
+# テスト
+MAP_ASCII = """
+S . . . . . .
+# # # # # . #
+. . . . # . #
+. # # . # . #
+. # G . . . #
+. # # # # # #
+. . . . . . .
+"""
+
+start, goal, obstacles, width, height = parse_grid_map(MAP_ASCII)
+print(f"Start: {start}")
+print(f"Goal: {goal}")
+print(f"Obstacles: {obstacles}")
+print(f"Size: {width}x{height}")
+
+
 # %% GridWorld Environment
 class GridWorld:
     """シンプルなGridWorld環境
 
-    5x5のグリッドで、エージェントがスタート地点(0,0)からゴール地点(4,4)まで移動する。
+    ASCIIマップからグリッドを生成し、エージェントがスタート地点からゴール地点まで移動する。
     障害物も配置可能。
 
     行動:
@@ -32,19 +97,17 @@ class GridWorld:
         各ステップ: -0.01 (効率的な経路を学習させるため)
     """
 
-    def __init__(self, size: int = 5, max_steps: int = 100):
-        self.size = size
+    def __init__(self, ascii_map: str = MAP_ASCII, max_steps: int = 200):
+        start, goal, obstacles, width, height = parse_grid_map(ascii_map)
+
+        self.width = width
+        self.height = height
         self.max_steps = max_steps
         self.action_space_n = 4  # 上下左右
 
-        # 障害物の位置（固定）
-        self.obstacles = {(1, 1), (2, 1), (3, 1), (1, 3), (2, 3)}
-
-        # ゴール位置
-        self.goal = (size - 1, size - 1)
-
-        # スタート位置
-        self.start = (0, 0)
+        self.obstacles = obstacles
+        self.goal = goal
+        self.start = start
 
         self.reset()
 
@@ -58,7 +121,10 @@ class GridWorld:
         """状態を返す（正規化された座標）"""
         # 座標を0-1に正規化
         return np.array(
-            [self.agent_pos[0] / (self.size - 1), self.agent_pos[1] / (self.size - 1)],
+            [
+                self.agent_pos[0] / (self.width - 1),
+                self.agent_pos[1] / (self.height - 1),
+            ],
             dtype=np.float32,
         )
 
@@ -82,11 +148,11 @@ class GridWorld:
         if action == 0:  # 上
             new_pos[1] = max(0, new_pos[1] - 1)
         elif action == 1:  # 下
-            new_pos[1] = min(self.size - 1, new_pos[1] + 1)
+            new_pos[1] = min(self.height - 1, new_pos[1] + 1)
         elif action == 2:  # 左
             new_pos[0] = max(0, new_pos[0] - 1)
         elif action == 3:  # 右
-            new_pos[0] = min(self.size - 1, new_pos[0] + 1)
+            new_pos[0] = min(self.width - 1, new_pos[0] + 1)
 
         # 壁チェック（移動しなかった場合）
         hit_wall = new_pos == self.agent_pos
@@ -115,7 +181,7 @@ class GridWorld:
 
     def render(self):
         """グリッドを表示"""
-        grid = [["." for _ in range(self.size)] for _ in range(self.size)]
+        grid = [["." for _ in range(self.width)] for _ in range(self.height)]
 
         # 障害物
         for ox, oy in self.obstacles:
@@ -129,10 +195,10 @@ class GridWorld:
         ax, ay = self.agent_pos
         grid[ay][ax] = "A"
 
-        print("-" * (self.size * 2 + 1))
+        print("-" * (self.width * 2 + 1))
         for row in grid:
             print("|" + " ".join(row) + "|")
-        print("-" * (self.size * 2 + 1))
+        print("-" * (self.width * 2 + 1))
 
 
 # %% Q-Network
@@ -341,10 +407,8 @@ class DQNAgent(BaseAgent):
 
 
 # %% Evaluation Function
-def evaluate_agent(agent: DQNAgent, num_episodes: int = 3):
+def evaluate_agent(agent: DQNAgent, env: GridWorld, num_episodes: int = 3):
     """学習済みエージェントをrenderして評価"""
-    env = GridWorld()
-
     for episode in range(num_episodes):
         observation = env.reset()
         total_reward = 0
@@ -421,7 +485,7 @@ plt.show()
 
 
 # %% Q-Value Heatmap
-def plot_q_heatmap(agent: DQNAgent, grid_size: int = 5):
+def plot_q_heatmap(agent: DQNAgent, env: GridWorld):
     """各セルのQ値を4方向の三角形で可視化
 
     各セルを対角線で4つの三角形に分割:
@@ -433,21 +497,21 @@ def plot_q_heatmap(agent: DQNAgent, grid_size: int = 5):
     from matplotlib.patches import Polygon
     import matplotlib.colors as mcolors
 
-    # 各セルのQ値を計算
-    q_values = np.zeros((grid_size, grid_size, 4))
+    width = env.width
+    height = env.height
+    obstacles = env.obstacles
+    goal = env.goal
+    start = env.start
 
-    for y in range(grid_size):
-        for x in range(grid_size):
-            state = np.array(
-                [x / (grid_size - 1), y / (grid_size - 1)], dtype=np.float32
-            )
+    # 各セルのQ値を計算
+    q_values = np.zeros((height, width, 4))
+
+    for y in range(height):
+        for x in range(width):
+            state = np.array([x / (width - 1), y / (height - 1)], dtype=np.float32)
             state_var = Variable(state.reshape(1, -1))
             q = agent.qnet(state_var).data_required[0]
             q_values[y, x] = q
-
-    # 障害物とゴール
-    obstacles = {(1, 1), (2, 1), (3, 1), (1, 3), (2, 3)}
-    goal = (grid_size - 1, grid_size - 1)
 
     # Q値の範囲を取得（カラーマップ用）
     q_min = np.min(q_values)
@@ -455,11 +519,11 @@ def plot_q_heatmap(agent: DQNAgent, grid_size: int = 5):
     norm = mcolors.Normalize(vmin=q_min, vmax=q_max)
     cmap = plt.get_cmap("RdYlGn")
 
-    _, ax = plt.subplots(figsize=(10, 10))
+    _, ax = plt.subplots(figsize=(12, 10))
 
     # 各セルに4つの三角形を描画
-    for y in range(grid_size):
-        for x in range(grid_size):
+    for y in range(height):
+        for x in range(width):
             # セルの中心
             cx, cy = x, y
 
@@ -513,27 +577,14 @@ def plot_q_heatmap(agent: DQNAgent, grid_size: int = 5):
                         f"{q_val:.2f}",
                         ha="center",
                         va="center",
-                        fontsize=7,
+                        fontsize=6,
                         color="black",
                     )
 
-                # 最適行動を中央に表示
-                best_action = np.argmax(q_values[y, x])
-                ax.text(
-                    cx,
-                    cy,
-                    action_labels[best_action],
-                    ha="center",
-                    va="center",
-                    fontsize=12,
-                    fontweight="bold",
-                    color="blue",
-                )
-
     # スタートとゴールをマーク
     ax.text(
-        0,
-        0,
+        start[0],
+        start[1],
         "S",
         ha="center",
         va="center",
@@ -553,12 +604,13 @@ def plot_q_heatmap(agent: DQNAgent, grid_size: int = 5):
     )
 
     # グリッド線
-    for i in range(grid_size + 1):
+    for i in range(height + 1):
         ax.axhline(i - 0.5, color="black", linewidth=1)
+    for i in range(width + 1):
         ax.axvline(i - 0.5, color="black", linewidth=1)
 
-    ax.set_xlim(-0.5, grid_size - 0.5)
-    ax.set_ylim(grid_size - 0.5, -0.5)  # y軸を反転
+    ax.set_xlim(-0.5, width - 0.5)
+    ax.set_ylim(height - 0.5, -0.5)  # y軸を反転
     ax.set_aspect("equal")
     ax.set_xlabel("x")
     ax.set_ylabel("y")
@@ -574,8 +626,189 @@ def plot_q_heatmap(agent: DQNAgent, grid_size: int = 5):
 
 
 print("\nQ-Value Heatmap:")
-plot_q_heatmap(agent)
+plot_q_heatmap(agent, env)
+
+
+# %% Value Heatmap and Policy
+def plot_value_and_policy(agent: DQNAgent, env: GridWorld):
+    """Value関数のheatmapとPolicyの矢印を並べて表示
+
+    左: V(s) = max_a Q(s, a) のheatmap
+    右: 各セルでの最適行動を矢印で表示
+    """
+    from matplotlib.patches import Rectangle
+    import matplotlib.colors as mcolors
+
+    width = env.width
+    height = env.height
+    obstacles = env.obstacles
+    goal = env.goal
+    start = env.start
+
+    # 各セルのQ値を計算
+    q_values = np.zeros((height, width, 4))
+
+    for y in range(height):
+        for x in range(width):
+            state = np.array([x / (width - 1), y / (height - 1)], dtype=np.float32)
+            state_var = Variable(state.reshape(1, -1))
+            q = agent.qnet(state_var).data_required[0]
+            q_values[y, x] = q
+
+    # V(s) = max_a Q(s, a)
+    v_values = np.max(q_values, axis=2)
+
+    # 最適行動
+    best_actions = np.argmax(q_values, axis=2)
+
+    # 行動に対応する矢印のオフセット (dx, dy)
+    # action: 0=上, 1=下, 2=左, 3=右
+    arrow_directions = {
+        0: (0, -0.3),  # 上
+        1: (0, 0.3),  # 下
+        2: (-0.3, 0),  # 左
+        3: (0.3, 0),  # 右
+    }
+
+    _, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+
+    # === 左: Value Heatmap ===
+    # 障害物を除いたV値の範囲
+    v_min = np.min(v_values)
+    v_max = np.max(v_values)
+    norm = mcolors.Normalize(vmin=v_min, vmax=v_max)
+    cmap = plt.get_cmap("RdYlGn")
+
+    for y in range(height):
+        for x in range(width):
+            if (x, y) in obstacles:
+                color = "gray"
+            else:
+                color = cmap(norm(v_values[y, x]))
+
+            rect = Rectangle(
+                (x - 0.5, y - 0.5),
+                1,
+                1,
+                facecolor=color,
+                edgecolor="black",
+                linewidth=0.5,
+            )
+            ax1.add_patch(rect)
+
+            if (x, y) not in obstacles:
+                ax1.text(
+                    x,
+                    y,
+                    f"{v_values[y, x]:.2f}",
+                    ha="center",
+                    va="center",
+                    fontsize=7,
+                    color="black",
+                )
+
+    # スタートとゴール
+    ax1.text(
+        start[0],
+        start[1],
+        "S",
+        ha="center",
+        va="center",
+        fontsize=10,
+        color="red",
+        bbox=dict(boxstyle="circle", facecolor="white", edgecolor="red"),
+    )
+    ax1.text(
+        goal[0],
+        goal[1],
+        "G",
+        ha="center",
+        va="center",
+        fontsize=10,
+        color="green",
+        bbox=dict(boxstyle="circle", facecolor="white", edgecolor="green"),
+    )
+
+    ax1.set_xlim(-0.5, width - 0.5)
+    ax1.set_ylim(height - 0.5, -0.5)
+    ax1.set_aspect("equal")
+    ax1.set_xlabel("x")
+    ax1.set_ylabel("y")
+    ax1.set_title("Value Function V(s) = max_a Q(s, a)")
+
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    plt.colorbar(sm, ax=ax1, label="V(s)")
+
+    # === 右: Policy Arrows ===
+    for y in range(height):
+        for x in range(width):
+            if (x, y) in obstacles:
+                color = "gray"
+            else:
+                color = "lightblue"
+
+            rect = Rectangle(
+                (x - 0.5, y - 0.5),
+                1,
+                1,
+                facecolor=color,
+                edgecolor="black",
+                linewidth=0.5,
+            )
+            ax2.add_patch(rect)
+
+            if (x, y) not in obstacles and (x, y) != goal:
+                action = best_actions[y, x]
+                dx, dy = arrow_directions[action]
+                ax2.arrow(
+                    x,
+                    y,
+                    dx,
+                    dy,
+                    head_width=0.15,
+                    head_length=0.1,
+                    fc="darkblue",
+                    ec="darkblue",
+                )
+
+    # スタートとゴール
+    ax2.text(
+        start[0],
+        start[1],
+        "S",
+        ha="center",
+        va="center",
+        fontsize=10,
+        color="red",
+        bbox=dict(boxstyle="circle", facecolor="white", edgecolor="red"),
+    )
+    ax2.text(
+        goal[0],
+        goal[1],
+        "G",
+        ha="center",
+        va="center",
+        fontsize=10,
+        color="green",
+        bbox=dict(boxstyle="circle", facecolor="white", edgecolor="green"),
+    )
+
+    ax2.set_xlim(-0.5, width - 0.5)
+    ax2.set_ylim(height - 0.5, -0.5)
+    ax2.set_aspect("equal")
+    ax2.set_xlabel("x")
+    ax2.set_ylabel("y")
+    ax2.set_title("Policy π(s) = argmax_a Q(s, a)")
+
+    plt.tight_layout()
+    plt.show()
+
+
+print("\nValue and Policy:")
+plot_value_and_policy(agent, env)
+
 
 # %% Evaluation
 print("\nEvaluating trained agent...")
-evaluate_agent(agent, num_episodes=3)
+evaluate_agent(agent, env, num_episodes=3)
