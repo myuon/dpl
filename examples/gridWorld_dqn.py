@@ -15,10 +15,11 @@ from dpl.agent import ReplayBuffer, BaseAgent
 
 
 # %% Feature Toggle
-# 観測モード: "onehot" または "local"
+# 観測モード: "onehot", "local", "local_partial"
 # - onehot: one-hotエンコーディング (width * height次元)
 # - local: 局所視野 (3x3の壁情報9次元 + ゴールへの正規化方向ベクトル2次元 = 11次元)
-OBSERVATION_MODE = "local"
+# - local_partial: 部分観測 (3x3の壁情報9次元のみ、ゴール方向なし)
+OBSERVATION_MODE = "local_partial"
 
 # フレームスタック数（過去K個の観測を連結して状態とする）
 FRAME_STACK = 4
@@ -180,9 +181,12 @@ class GridWorld(Env):
         """状態空間のサイズ"""
         if OBSERVATION_MODE == "onehot":
             return self.width * self.height
-        else:  # local
+        elif OBSERVATION_MODE == "local":
             # 3x3の壁情報(9) + 方向ベクトル(2) = 11
             return 11
+        else:  # local_partial
+            # 3x3の壁情報のみ = 9
+            return 9
 
     def reset(self) -> np.ndarray:
         """環境をリセット
@@ -228,8 +232,10 @@ class GridWorld(Env):
         """状態を返す"""
         if OBSERVATION_MODE == "onehot":
             return self._get_state_onehot()
-        else:  # local
+        elif OBSERVATION_MODE == "local":
             return self._get_state_local()
+        else:  # local_partial
+            return self._get_state_local_partial()
 
     def _get_state_onehot(self) -> np.ndarray:
         """one-hotエンコーディング"""
@@ -238,11 +244,9 @@ class GridWorld(Env):
         state[idx] = 1.0
         return state
 
-    def _get_state_local(self) -> np.ndarray:
-        """局所視野: 3x3の壁情報 + ゴールへの正規化方向ベクトル"""
+    def _get_local_view(self) -> list[float]:
+        """3x3の壁情報を取得（共通処理）"""
         x, y = self.agent_pos
-
-        # 3x3の壁情報（障害物または範囲外なら1、通行可能なら0）
         local_view = []
         for dy in [-1, 0, 1]:
             for dx in [-1, 0, 1]:
@@ -254,6 +258,12 @@ class GridWorld(Env):
                     local_view.append(1.0)  # 障害物
                 else:
                     local_view.append(0.0)  # 通行可能
+        return local_view
+
+    def _get_state_local(self) -> np.ndarray:
+        """局所視野: 3x3の壁情報 + ゴールへの正規化方向ベクトル"""
+        x, y = self.agent_pos
+        local_view = self._get_local_view()
 
         # ゴールへの方向ベクトル（正規化）
         gx, gy = self.goal
@@ -266,6 +276,11 @@ class GridWorld(Env):
 
         state = np.array(local_view + [dir_x, dir_y], dtype=np.float32)
         return state
+
+    def _get_state_local_partial(self) -> np.ndarray:
+        """部分観測: 3x3の壁情報のみ（ゴール方向なし）"""
+        local_view = self._get_local_view()
+        return np.array(local_view, dtype=np.float32)
 
     def step(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict]:
         """1ステップ実行
@@ -933,7 +948,7 @@ def _get_state_for_pos(x: int, y: int, env: GridWorld) -> np.ndarray:
     if OBSERVATION_MODE == "onehot":
         single_state = np.zeros(env.width * env.height, dtype=np.float32)
         single_state[y * env.width + x] = 1.0
-    else:  # local
+    else:  # local or local_partial
         # 3x3の壁情報
         local_view = []
         for dy in [-1, 0, 1]:
@@ -945,15 +960,19 @@ def _get_state_for_pos(x: int, y: int, env: GridWorld) -> np.ndarray:
                     local_view.append(1.0)
                 else:
                     local_view.append(0.0)
-        # ゴールへの方向ベクトル（正規化）
-        gx, gy = env.goal
-        dir_x = gx - x
-        dir_y = gy - y
-        dist = np.sqrt(dir_x**2 + dir_y**2)
-        if dist > 0:
-            dir_x /= dist
-            dir_y /= dist
-        single_state = np.array(local_view + [dir_x, dir_y], dtype=np.float32)
+
+        if OBSERVATION_MODE == "local":
+            # ゴールへの方向ベクトル（正規化）
+            gx, gy = env.goal
+            dir_x = gx - x
+            dir_y = gy - y
+            dist = np.sqrt(dir_x**2 + dir_y**2)
+            if dist > 0:
+                dir_x /= dist
+                dir_y /= dist
+            single_state = np.array(local_view + [dir_x, dir_y], dtype=np.float32)
+        else:  # local_partial
+            single_state = np.array(local_view, dtype=np.float32)
 
     # フレームスタック: 同じ状態をK回繰り返す（静止状態を想定）
     if FRAME_STACK > 1:
@@ -1348,25 +1367,58 @@ def plot_dueling_analysis(agent: DQNAgent, env: GridWorld):
 
             if (x, y) in obstacles:
                 for tri in triangles:
-                    poly = Polygon(tri, facecolor="gray", edgecolor="black", linewidth=0.5)
+                    poly = Polygon(
+                        tri, facecolor="gray", edgecolor="black", linewidth=0.5
+                    )
                     ax1.add_patch(poly)
-                ax1.text(cx, cy, "#", ha="center", va="center", fontsize=14, fontweight="bold")
+                ax1.text(
+                    cx,
+                    cy,
+                    "#",
+                    ha="center",
+                    va="center",
+                    fontsize=14,
+                    fontweight="bold",
+                )
             else:
                 for i, (tri, offset) in enumerate(zip(triangles, label_offsets)):
                     adv_val = adv_values[y, x, i]
                     color = adv_cmap(adv_norm(adv_val))
-                    poly = Polygon(tri, facecolor=color, edgecolor="black", linewidth=0.5)
+                    poly = Polygon(
+                        tri, facecolor=color, edgecolor="black", linewidth=0.5
+                    )
                     ax1.add_patch(poly)
                     ax1.text(
-                        cx + offset[0], cy + offset[1], f"{adv_val:.2f}",
-                        ha="center", va="center", fontsize=6, color="black"
+                        cx + offset[0],
+                        cy + offset[1],
+                        f"{adv_val:.2f}",
+                        ha="center",
+                        va="center",
+                        fontsize=6,
+                        color="black",
                     )
 
     # スタートとゴール（左）
-    ax1.text(start[0], start[1], "S", ha="center", va="center", fontsize=10, color="red",
-             bbox=dict(boxstyle="circle", facecolor="white", edgecolor="red"))
-    ax1.text(goal[0], goal[1], "G", ha="center", va="center", fontsize=10, color="green",
-             bbox=dict(boxstyle="circle", facecolor="white", edgecolor="green"))
+    ax1.text(
+        start[0],
+        start[1],
+        "S",
+        ha="center",
+        va="center",
+        fontsize=10,
+        color="red",
+        bbox=dict(boxstyle="circle", facecolor="white", edgecolor="red"),
+    )
+    ax1.text(
+        goal[0],
+        goal[1],
+        "G",
+        ha="center",
+        va="center",
+        fontsize=10,
+        color="green",
+        bbox=dict(boxstyle="circle", facecolor="white", edgecolor="green"),
+    )
 
     for i in range(height + 1):
         ax1.axhline(i - 0.5, color="black", linewidth=1)
@@ -1392,22 +1444,52 @@ def plot_dueling_analysis(agent: DQNAgent, env: GridWorld):
     for y in range(height):
         for x in range(width):
             if (x, y) in obstacles:
-                rect = Rectangle((x - 0.5, y - 0.5), 1, 1, facecolor="gray", edgecolor="black")
+                rect = Rectangle(
+                    (x - 0.5, y - 0.5), 1, 1, facecolor="gray", edgecolor="black"
+                )
                 ax2.add_patch(rect)
-                ax2.text(x, y, "#", ha="center", va="center", fontsize=14, fontweight="bold")
+                ax2.text(
+                    x, y, "#", ha="center", va="center", fontsize=14, fontweight="bold"
+                )
             else:
                 gap_val = gap_values[y, x]
                 normalized = (gap_val - gap_min) / (gap_max - gap_min + 1e-8)
                 color = gap_cmap(normalized)
-                rect = Rectangle((x - 0.5, y - 0.5), 1, 1, facecolor=color, edgecolor="black")
+                rect = Rectangle(
+                    (x - 0.5, y - 0.5), 1, 1, facecolor=color, edgecolor="black"
+                )
                 ax2.add_patch(rect)
-                ax2.text(x, y, f"{gap_val:.2f}", ha="center", va="center", fontsize=8, color="black")
+                ax2.text(
+                    x,
+                    y,
+                    f"{gap_val:.2f}",
+                    ha="center",
+                    va="center",
+                    fontsize=8,
+                    color="black",
+                )
 
     # スタートとゴール（中央）
-    ax2.text(start[0], start[1], "S", ha="center", va="center", fontsize=10, color="red",
-             bbox=dict(boxstyle="circle", facecolor="white", edgecolor="red"))
-    ax2.text(goal[0], goal[1], "G", ha="center", va="center", fontsize=10, color="green",
-             bbox=dict(boxstyle="circle", facecolor="white", edgecolor="green"))
+    ax2.text(
+        start[0],
+        start[1],
+        "S",
+        ha="center",
+        va="center",
+        fontsize=10,
+        color="red",
+        bbox=dict(boxstyle="circle", facecolor="white", edgecolor="red"),
+    )
+    ax2.text(
+        goal[0],
+        goal[1],
+        "G",
+        ha="center",
+        va="center",
+        fontsize=10,
+        color="green",
+        bbox=dict(boxstyle="circle", facecolor="white", edgecolor="green"),
+    )
 
     ax2.set_xlim(-0.5, width - 0.5)
     ax2.set_ylim(height - 0.5, -0.5)
@@ -1416,7 +1498,9 @@ def plot_dueling_analysis(agent: DQNAgent, env: GridWorld):
     ax2.set_ylabel("y")
     ax2.set_title("Action Gap (max A - second max A)")
 
-    sm2 = plt.cm.ScalarMappable(cmap=gap_cmap, norm=mcolors.Normalize(vmin=gap_min, vmax=gap_max))
+    sm2 = plt.cm.ScalarMappable(
+        cmap=gap_cmap, norm=mcolors.Normalize(vmin=gap_min, vmax=gap_max)
+    )
     sm2.set_array([])
     plt.colorbar(sm2, ax=ax2, label="Gap (action confidence)")
 
@@ -1431,9 +1515,13 @@ def plot_dueling_analysis(agent: DQNAgent, env: GridWorld):
     for y in range(height):
         for x in range(width):
             if (x, y) in obstacles:
-                rect = Rectangle((x - 0.5, y - 0.5), 1, 1, facecolor="gray", edgecolor="black")
+                rect = Rectangle(
+                    (x - 0.5, y - 0.5), 1, 1, facecolor="gray", edgecolor="black"
+                )
                 ax3.add_patch(rect)
-                ax3.text(x, y, "#", ha="center", va="center", fontsize=14, fontweight="bold")
+                ax3.text(
+                    x, y, "#", ha="center", va="center", fontsize=14, fontweight="bold"
+                )
             else:
                 # V(s) で色を決定
                 v_val = value_values[y, x]
@@ -1444,20 +1532,60 @@ def plot_dueling_analysis(agent: DQNAgent, env: GridWorld):
                 gap_norm = gap_normalized[y, x]
                 # 明度調整: 白(1,1,1)との補間（gap小→白寄り、gap大→元の色）
                 alpha_factor = 0.3 + 0.7 * gap_norm  # 0.3〜1.0
-                adjusted_color = base_color * alpha_factor + np.array([1, 1, 1]) * (1 - alpha_factor)
+                adjusted_color = base_color * alpha_factor + np.array([1, 1, 1]) * (
+                    1 - alpha_factor
+                )
 
-                rect = Rectangle((x - 0.5, y - 0.5), 1, 1, facecolor=adjusted_color, edgecolor="black")
+                rect = Rectangle(
+                    (x - 0.5, y - 0.5),
+                    1,
+                    1,
+                    facecolor=adjusted_color,
+                    edgecolor="black",
+                )
                 ax3.add_patch(rect)
 
                 # V値とGap値を表示
-                ax3.text(x, y - 0.15, f"V:{v_val:.1f}", ha="center", va="center", fontsize=6, color="black")
-                ax3.text(x, y + 0.15, f"G:{gap_values[y, x]:.2f}", ha="center", va="center", fontsize=6, color="black")
+                ax3.text(
+                    x,
+                    y - 0.15,
+                    f"V:{v_val:.1f}",
+                    ha="center",
+                    va="center",
+                    fontsize=6,
+                    color="black",
+                )
+                ax3.text(
+                    x,
+                    y + 0.15,
+                    f"G:{gap_values[y, x]:.2f}",
+                    ha="center",
+                    va="center",
+                    fontsize=6,
+                    color="black",
+                )
 
     # スタートとゴール（右）
-    ax3.text(start[0], start[1], "S", ha="center", va="center", fontsize=10, color="red",
-             bbox=dict(boxstyle="circle", facecolor="white", edgecolor="red"))
-    ax3.text(goal[0], goal[1], "G", ha="center", va="center", fontsize=10, color="green",
-             bbox=dict(boxstyle="circle", facecolor="white", edgecolor="green"))
+    ax3.text(
+        start[0],
+        start[1],
+        "S",
+        ha="center",
+        va="center",
+        fontsize=10,
+        color="red",
+        bbox=dict(boxstyle="circle", facecolor="white", edgecolor="red"),
+    )
+    ax3.text(
+        goal[0],
+        goal[1],
+        "G",
+        ha="center",
+        va="center",
+        fontsize=10,
+        color="green",
+        bbox=dict(boxstyle="circle", facecolor="white", edgecolor="green"),
+    )
 
     ax3.set_xlim(-0.5, width - 0.5)
     ax3.set_ylim(height - 0.5, -0.5)
@@ -1467,12 +1595,21 @@ def plot_dueling_analysis(agent: DQNAgent, env: GridWorld):
     ax3.set_title("V(s) × Gap (color=V, brightness=Gap)")
 
     # カラーバー（V用）
-    sm3 = plt.cm.ScalarMappable(cmap=v_cmap, norm=mcolors.Normalize(vmin=v_min, vmax=v_max))
+    sm3 = plt.cm.ScalarMappable(
+        cmap=v_cmap, norm=mcolors.Normalize(vmin=v_min, vmax=v_max)
+    )
     sm3.set_array([])
     cbar3 = plt.colorbar(sm3, ax=ax3, label="V(s)")
     # 明度の凡例をタイトルに追加
-    ax3.text(0.5, -0.12, "Brightness: Gap (bright=important decision)", transform=ax3.transAxes,
-             ha="center", fontsize=9, style="italic")
+    ax3.text(
+        0.5,
+        -0.12,
+        "Brightness: Gap (bright=important decision)",
+        transform=ax3.transAxes,
+        ha="center",
+        fontsize=9,
+        style="italic",
+    )
 
     plt.tight_layout()
     plt.show()
