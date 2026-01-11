@@ -33,18 +33,19 @@ from dpl.agent_trainer import AgentTrainer, GymEnvWrapper
 # | truncated | 200ステップでTrue |
 
 # %% [markdown]
-# ## REINFORCE（モンテカルロ方策勾配）
+# ## REINFORCE with Baseline（Advantage Actor-Critic）
 #
-# 最小構成の方策勾配法。価値関数なし。
+# Baseline（価値関数 V(s)）付きの方策勾配法。
 #
-# - 方策: π(a|s) = N(μ(s), σ(s))
-# - 損失: -E[log π(a|s) * G_t]
-# - G_t: モンテカルロリターン（エピソード終了まで待つ）
+# - Actor（方策）: π(a|s) = N(μ(s), σ(s))
+# - Critic（価値関数）: V(s) → 状態の期待リターンを推定
+# - Advantage: A_t = G_t - V(s_t)
+# - Actor損失: -E[log π(a|s) * A_t]
+# - Critic損失: MSE(V(s), G_t)
 #
-# 核となる概念:
-# - 確率方策（NNで平均と分散を出力）
-# - log probability（学習信号の入口）
-# - tanhスケーリング時のlog_prob補正
+# 役割分担:
+# - Actor: "どの行動が期待より良かったか" を advantage で学ぶ
+# - Critic: "その状態の期待値" を回帰で学ぶ
 
 
 # %%
@@ -102,6 +103,28 @@ class GaussianPolicy(Layer):
 
 
 # %%
+class ValueNetwork(Layer):
+    """価値関数ネットワーク（Critic）
+
+    状態 s → V(s) を出力
+    """
+
+    def __init__(self, state_dim: int, hidden_dim: int = 64):
+        super().__init__()
+        self.net = Sequential(
+            L.Linear(hidden_dim, in_size=state_dim),
+            F.relu,
+            L.Linear(hidden_dim),
+            F.relu,
+            L.Linear(1),  # スカラー出力
+        )
+
+    def predict(self, state: Variable) -> Variable:
+        """状態から価値を出力"""
+        return self.net.apply(state)
+
+
+# %%
 class ReinforceAgent(BaseAgent):
     """REINFORCE エージェント
 
@@ -117,17 +140,19 @@ class ReinforceAgent(BaseAgent):
         action_scale: float = 2.0,
         lr: float = 1e-3,
         gamma: float = 0.99,
-        normalize_returns: bool = True,
     ):
         self.gamma = gamma
-        self.normalize_returns = normalize_returns
         self.action_scale = action_scale
 
-        # 方策ネットワーク
+        # Actor（方策ネットワーク）
         self.policy = GaussianPolicy(
             state_dim, action_dim, hidden_dim, action_scale
         )
-        self.optimizer = Adam(lr=lr).setup(self.policy)
+        self.actor_optimizer = Adam(lr=lr).setup(self.policy)
+
+        # Critic（価値関数ネットワーク）
+        self.critic = ValueNetwork(state_dim, hidden_dim)
+        self.critic_optimizer = Adam(lr=lr).setup(self.critic)
 
         # エピソード内のトラジェクトリ
         self.episode_states: list[np.ndarray] = []
@@ -215,7 +240,7 @@ class ReinforceAgent(BaseAgent):
         return log_prob
 
     def end_episode(self):
-        """エピソード終了時に方策を更新"""
+        """エピソード終了時にActor/Criticを更新"""
         if len(self.episode_rewards) == 0:
             return
 
@@ -227,26 +252,42 @@ class ReinforceAgent(BaseAgent):
             returns.insert(0, G)
 
         returns = np.array(returns, dtype=np.float32)
-
-        # リターンの正規化（分散削減）
-        if self.normalize_returns and len(returns) > 1:
-            returns = (returns - returns.mean()) / (returns.std() + 1e-8)
+        returns_v = Variable(returns.reshape(-1, 1))
 
         # states, actions をテンソルに変換
         states = Variable(np.array(self.episode_states, dtype=np.float32))
         actions = np.array(self.episode_actions, dtype=np.float32)
 
-        # 実際に取った行動の log_prob を計算
+        # Critic: V(s) を計算
+        values = self.critic.predict(states)  # shape: (T, 1)
+
+        # Advantage: A_t = G_t - V(s_t)
+        # .data_required で計算グラフから切り離す（Actor更新時にCriticの勾配が流れないように）
+        advantages = returns_v.data_required - values.data_required
+        advantages = advantages.reshape(-1)
+
+        # Advantageの正規化（分散削減）
+        if len(advantages) > 1:
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        advantages_v = Variable(advantages.astype(np.float32))
+
+        # --- Actor更新 ---
         log_probs = self._compute_log_prob(states, actions)
+        actor_loss = -(log_probs * advantages_v).sum() / len(returns)
 
-        # 損失: -E[log π(a|s) * G_t]
-        returns_v = Variable(returns.reshape(-1))
-        loss = -(log_probs * returns_v).sum() / len(returns)
-
-        # 更新
         self.policy.cleargrads()
-        loss.backward()
-        self.optimizer.update()
+        actor_loss.backward()
+        self.actor_optimizer.update()
+
+        # --- Critic更新 ---
+        # 損失: MSE(V(s), G_t)
+        # 新しくforwardしてグラフを作り直す
+        values = self.critic.predict(states)
+        critic_loss = ((values - returns_v) ** 2).sum() / len(returns)
+
+        self.critic.cleargrads()
+        critic_loss.backward()
+        self.critic_optimizer.update()
 
         # トラジェクトリをクリア
         self.episode_states = []
@@ -255,13 +296,13 @@ class ReinforceAgent(BaseAgent):
 
 
 # %% [markdown]
-# ## 実行：REINFORCE
+# ## 実行：REINFORCE with Baseline
 
 # %%
-print("=== Pendulum-v1 REINFORCE (dpl) ===")
+print("=== Pendulum-v1 REINFORCE with Baseline (dpl) ===")
 print()
 
-# REINFORCE エージェント
+# REINFORCE with Baseline エージェント
 agent = ReinforceAgent(
     state_dim=3,
     action_dim=1,
@@ -269,7 +310,6 @@ agent = ReinforceAgent(
     action_scale=2.0,
     lr=3e-4,
     gamma=0.99,
-    normalize_returns=True,
 )
 
 # %%
