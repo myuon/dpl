@@ -338,10 +338,18 @@ class GridWorld(Env):
             reward = 1.0
 
         # 最大ステップ超過 or 同一セル訪問回数超過
-        truncated = (
-            self.steps >= self.max_steps
-            or self.visit_counts[pos] >= self.max_visit_count
-        )
+        # local_partialモードではループ検知を無効化（DRQNがLSTMで履歴を持つため）
+        if OBSERVATION_MODE == "local_partial":
+            truncated = self.steps >= self.max_steps
+        else:
+            truncated = (
+                self.steps >= self.max_steps
+                or self.visit_counts[pos] >= self.max_visit_count
+            )
+
+        # truncated時のペナルティ（ゴール未到達）
+        if truncated and not terminated:
+            reward -= 1.0
 
         return self._get_state(), reward, terminated, truncated, {}
 
@@ -782,8 +790,8 @@ class DQNAgent(BaseAgent):
         action_size: int = 4,
         gamma: float = 0.99,
         epsilon: float = 1.0,
-        epsilon_min: float = 0.1,
-        epsilon_decay: float = 0.995,  # per episode
+        epsilon_min: float = 0.10,
+        epsilon_decay: float = 0.998,  # per episode
         lr: float = 1e-3,
         batch_size: int = 32,
         buffer_size: int = 10000,
@@ -793,8 +801,8 @@ class DQNAgent(BaseAgent):
         grad_clip: float = 1.0,
         warmup_steps: int = 500,
         # DRQN用パラメータ
-        seq_len: int = 8,  # 学習用シーケンス長
-        burn_in: int = 4,  # LSTM安定化用のウォームアップ長
+        seq_len: int = 20,  # 学習用シーケンス長
+        burn_in: int = 20,  # LSTM安定化用のウォームアップ長
     ):
         self.state_size = state_size
         self.action_size = action_size
@@ -1291,7 +1299,7 @@ trainer = AgentTrainer(
     env=env,
     eval_env=eval_env,
     agent=agent,
-    num_episodes=1500,
+    num_episodes=3500,
     eval_interval=50,
     eval_n=200,
 )
@@ -1301,27 +1309,72 @@ result = trainer.train()
 # %% Visualization
 import matplotlib.pyplot as plt
 
-fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 4))
+fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+ax1, ax2, ax3 = axes[0]
+ax4, ax5, ax6 = axes[1]
 
-ax1.plot(result.episode_rewards)
+# 1. Episode Rewards
+ax1.plot(result.episode_rewards, alpha=0.7)
 ax1.set_xlabel("Episode")
 ax1.set_ylabel("Total Reward")
-ax1.set_title("DQN: Episode Rewards (GridWorld)")
+ax1.set_title("Episode Rewards")
 ax1.grid(True)
 
-ax2.plot(result.episode_losses)
+# 2. Average Loss
+ax2.plot(result.episode_losses, alpha=0.7)
 ax2.set_xlabel("Episode")
 ax2.set_ylabel("Average Loss")
-ax2.set_title("DQN: Average Loss per Episode")
+ax2.set_title("Average Loss per Episode")
 ax2.grid(True)
 
+# 3. Eval Return
 if result.eval_returns:
     episodes, returns = zip(*result.eval_returns)
-    ax3.plot(episodes, returns, marker="o", markersize=8, linewidth=2)
+    ax3.plot(episodes, returns, marker="o", markersize=4, linewidth=1.5)
     ax3.set_xlabel("Episode")
     ax3.set_ylabel("Eval Return")
-    ax3.set_title("DQN: Eval Return (ε=0, n=20)")
+    ax3.set_title(f"Eval Return (ε=0, n={trainer.eval_n})")
     ax3.grid(True)
+
+# 4. Success Rate
+if hasattr(result, "eval_success_rates") and result.eval_success_rates:
+    episodes, success_rates = zip(*result.eval_success_rates)
+    ax4.plot(
+        episodes,
+        [r * 100 for r in success_rates],
+        marker="o",
+        markersize=4,
+        linewidth=1.5,
+        color="green",
+    )
+    ax4.set_xlabel("Episode")
+    ax4.set_ylabel("Success Rate (%)")
+    ax4.set_title(f"Success Rate (n={trainer.eval_n})")
+    ax4.set_ylim(0, 105)
+    ax4.grid(True)
+
+# 5. Average Steps to Goal (成功時のみ)
+if hasattr(result, "eval_avg_steps") and result.eval_avg_steps:
+    episodes, avg_steps = zip(*result.eval_avg_steps)
+    # avg_steps=0 の場合はスキップ（成功なし）
+    valid_data = [(e, s) for e, s in zip(episodes, avg_steps) if s > 0]
+    if valid_data:
+        valid_eps, valid_steps = zip(*valid_data)
+        ax5.plot(
+            valid_eps,
+            valid_steps,
+            marker="o",
+            markersize=4,
+            linewidth=1.5,
+            color="orange",
+        )
+    ax5.set_xlabel("Episode")
+    ax5.set_ylabel("Avg Steps to Goal")
+    ax5.set_title("Avg Steps to Goal (success only)")
+    ax5.grid(True)
+
+# 6. 空きスロット（将来の拡張用、または非表示）
+ax6.axis("off")
 
 plt.tight_layout()
 plt.show()

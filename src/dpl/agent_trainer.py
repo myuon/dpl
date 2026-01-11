@@ -19,6 +19,8 @@ class TrainResult:
     episode_rewards: list[float]
     episode_losses: list[float]
     eval_returns: list[tuple[int, float]]
+    eval_success_rates: list[tuple[int, float]]  # (episode, success_rate)
+    eval_avg_steps: list[tuple[int, float]]  # (episode, avg_steps_to_goal)
 
 
 class AgentTrainer:
@@ -51,6 +53,8 @@ class AgentTrainer:
         episode_rewards: list[float] = []
         episode_losses: list[float] = []
         eval_returns: list[tuple[int, float]] = []
+        eval_success_rates: list[tuple[int, float]] = []
+        eval_avg_steps: list[tuple[int, float]] = []
         total_steps = 0
 
         for episode in range(self.num_episodes):
@@ -71,6 +75,8 @@ class AgentTrainer:
             if (episode + 1) % self.eval_interval == 0:
                 eval_return, success_rate, avg_steps, avg_success, avg_fail = self.evaluate(n=self.eval_n)
                 eval_returns.append((episode + 1, eval_return))
+                eval_success_rates.append((episode + 1, success_rate))
+                eval_avg_steps.append((episode + 1, avg_steps))
                 print(
                     f"  → Eval (n={self.eval_n}): Return={eval_return:.2f}, "
                     f"Success={success_rate*100:.0f}% ({int(success_rate*self.eval_n)}/{self.eval_n}), "
@@ -78,7 +84,10 @@ class AgentTrainer:
                     f"ReturnSuccess={avg_success:.2f}, ReturnFail={avg_fail:.2f}"
                 )
 
-        return TrainResult(episode_rewards, episode_losses, eval_returns)
+        return TrainResult(
+            episode_rewards, episode_losses, eval_returns,
+            eval_success_rates, eval_avg_steps
+        )
 
     def _run_episode(self) -> tuple[float, list[float], int]:
         """1エピソードを実行"""
