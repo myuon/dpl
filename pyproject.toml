@@ -30,5 +30,9 @@ explicit_package_bases = true
 module = "sklearn.*"
 ignore_missing_imports = true
 
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
 [tool.setuptools.packages.find]
 where = ["src"]

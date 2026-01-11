@@ -165,7 +165,11 @@ class AgentTrainer:
             if steps % self.update_every == 0:
                 loss = self.agent.update()
                 if loss is not None:
-                    losses.append(loss)
+                    # dict の場合は値の平均を取る
+                    if isinstance(loss, dict):
+                        losses.append(float(np.mean(list(loss.values()))))
+                    else:
+                        losses.append(loss)
 
             total_reward += reward
             observation = next_observation
