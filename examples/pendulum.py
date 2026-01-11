@@ -30,6 +30,7 @@ from dpl.agent_trainer import AgentTrainer, GymEnvWrapper
 # %% [markdown]
 # ## Random Agent（動作確認用）
 
+
 # %%
 class RandomAgent(BaseAgent):
     """ランダム行動エージェント（骨組み確認用）"""
@@ -64,14 +65,135 @@ class RandomAgent(BaseAgent):
 
 
 # %% [markdown]
+# ## ガウスノイズ付き定数トルク（ベースライン）
+#
+# ランダムよりマシな制御のベースライン。
+# 行動のスケーリング（クリッピング）の確認用。
+
+
+# %%
+class NoisyConstantAgent(BaseAgent):
+    """ガウスノイズ付き定数トルクエージェント
+
+    base_torque にガウスノイズを加えた行動を出力。
+    tanh でスケーリング: action = action_scale * tanh(raw)
+    """
+
+    def __init__(
+        self,
+        base_torque: float = 0.0,
+        noise_sigma: float = 1.0,
+        action_scale: float = 2.0,
+    ):
+        self.base_torque = base_torque
+        self.noise_sigma = noise_sigma
+        self.action_scale = action_scale
+        self.buffer = ReplayBuffer(capacity=100000, continuous_action=True)
+
+    def get_action(self, state: np.ndarray) -> np.ndarray:
+        return self.act(state, explore=True)
+
+    def act(self, state: np.ndarray, explore: bool = True) -> np.ndarray:
+        # obs = [cos(θ), sin(θ), θ_dot]
+        # θ=0 が真上（目標位置）
+        theta = np.arctan2(state[1], state[0])
+
+        # raw は unbounded (-inf, inf)
+        # θ > 0 なら負のトルク、θ < 0 なら正のトルク（P制御的）
+        raw = -theta
+
+        if explore:
+            raw = raw + np.random.normal(0, self.noise_sigma)
+
+        # tanh でスケーリング
+        a = np.tanh(raw)  # [-1, 1]
+        action = self.action_scale * a  # [-action_scale, action_scale]
+
+        return np.array([action], dtype=np.float32)
+
+    def store(
+        self,
+        state: np.ndarray,
+        action: np.ndarray,
+        reward: float,
+        next_state: np.ndarray,
+        done: bool,
+        *,
+        terminated=None,
+    ):
+        self.buffer.push(state, action, reward, next_state, done)
+
+    def update(self) -> dict | None:
+        return None  # 学習なし
+
+
+# %% [markdown]
+# ## ガウスサンプリング（方策ネット出力のシミュレーション）
+#
+# 方策ネットワークの出力を模擬：
+# raw ~ N(mu, sigma), action = action_scale * tanh(raw)
+
+
+# %%
+class GaussianSamplingAgent(BaseAgent):
+    """ガウス分布からサンプルして tanh スケーリング
+
+    方策ネットワークの出力を模擬するテスト用。
+    raw ~ N(mu, sigma)
+    action = action_scale * tanh(raw)
+    """
+
+    def __init__(
+        self,
+        mu: float = 0.0,
+        sigma: float = 1.0,
+        action_scale: float = 2.0,
+    ):
+        self.mu = mu
+        self.sigma = sigma
+        self.action_scale = action_scale
+        self.buffer = ReplayBuffer(capacity=100000, continuous_action=True)
+
+    def get_action(self, state: np.ndarray) -> np.ndarray:
+        return self.act(state, explore=True)
+
+    def act(self, state: np.ndarray, explore: bool = True) -> np.ndarray:
+        if explore:
+            raw = np.random.normal(self.mu, self.sigma)
+        else:
+            raw = self.mu
+
+        # tanh でスケーリング
+        action = self.action_scale * np.tanh(raw)
+
+        return np.array([action], dtype=np.float32)
+
+    def store(
+        self,
+        state: np.ndarray,
+        action: np.ndarray,
+        reward: float,
+        next_state: np.ndarray,
+        done: bool,
+        *,
+        terminated=None,
+    ):
+        self.buffer.push(state, action, reward, next_state, done)
+
+    def update(self) -> dict | None:
+        return None  # 学習なし
+
+
+# %% [markdown]
 # ## 実行：骨組み確認
 
 # %%
-print("=== Pendulum-v1 学習ループ骨組み確認 ===")
+print("=== Pendulum-v1 ベースライン確認 ===")
 print()
 
-# ランダムエージェントで骨組みを確認
-agent = RandomAgent()
+# ガウスノイズ付き定数トルクエージェント
+# base_torque=0, sigma=1.0: ほぼランダムだが中心が0
+agent = NoisyConstantAgent(base_torque=0.0, noise_sigma=1.0, action_scale=2.0)
 
 # %%
 # 環境をラップ
@@ -137,7 +259,8 @@ for _ in range(200):
     frame = render_env.render()
     frames.append(frame)
 
-    action = agent.act(obs, explore=False)
+    # explore=True でノイズ込みの行動を確認
+    action = agent.act(obs, explore=True)
     obs, _, terminated, truncated, _ = render_env.step(action)
 
     if terminated or truncated:
@@ -151,9 +274,11 @@ fig, ax = plt.subplots(figsize=(4, 4))
 ax.axis("off")
 img = ax.imshow(frames[0])
 
+
 def update(frame_idx):
     img.set_array(frames[frame_idx])
     return [img]
+
 
 anim = animation.FuncAnimation(fig, update, frames=len(frames), interval=50, blit=True)
 plt.close(fig)

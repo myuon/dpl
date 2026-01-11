@@ -111,19 +111,19 @@ class AgentTrainer:
             # 評価
             if (episode + 1) % self.eval_interval == 0:
                 # Eval-A: ε=0（完全greedy）
-                eval_return, success_rate, avg_steps, avg_success, avg_fail = self.evaluate(n=self.eval_n)
+                eval_return, success_rate, avg_steps, avg_success, avg_fail, mean_abs_action = self.evaluate(n=self.eval_n)
                 eval_returns.append((episode + 1, eval_return))
                 eval_success_rates.append((episode + 1, success_rate))
                 eval_avg_steps.append((episode + 1, avg_steps))
                 print(
                     f"  → Eval-A (ε=0, n={self.eval_n}): Return={eval_return:.2f}, "
                     f"Success={success_rate*100:.0f}% ({int(success_rate*self.eval_n)}/{self.eval_n}), "
-                    f"AvgSteps={avg_steps:.1f}"
+                    f"AvgSteps={avg_steps:.1f}, Mean|Action|={mean_abs_action:.3f}"
                 )
 
                 # Eval-B: 最初burn_in stepでε>0、その後ε=0（情報収集付き）
                 if self.burn_in_steps > 0:
-                    _, success_rate_b, _, _, _ = self.evaluate(
+                    _, success_rate_b, _, _, _, _ = self.evaluate(
                         n=self.eval_n,
                         burn_in_steps=self.burn_in_steps,
                         burn_in_epsilon=self.burn_in_epsilon,
@@ -200,7 +200,7 @@ class AgentTrainer:
         n: int = 20,
         burn_in_steps: int = 0,
         burn_in_epsilon: float = 0.0,
-    ) -> tuple[float, float, float, float, float]:
+    ) -> tuple[float, float, float, float, float, float]:
         """評価を実行
 
         Args:
@@ -209,17 +209,19 @@ class AgentTrainer:
             burn_in_epsilon: burn_in_steps中に使うepsilon値
 
         Returns:
-            (avg_return, success_rate, avg_steps_to_goal, avg_return_success, avg_return_fail)
+            (avg_return, success_rate, avg_steps_to_goal, avg_return_success, avg_return_fail, mean_abs_action)
             - avg_return: 平均リターン
             - success_rate: ゴール到達率 (0.0 ~ 1.0)
             - avg_steps_to_goal: ゴール到達時の平均ステップ数（到達なしの場合は0）
             - avg_return_success: 成功時の平均リターン（成功なしの場合は0）
             - avg_return_fail: 失敗時の平均リターン（失敗なしの場合は0）
+            - mean_abs_action: 平均絶対行動値
         """
         returns = []
         returns_success = []
         returns_fail = []
         steps_to_goal = []
+        all_actions: list[float] = []
 
         for _ in range(n):
             s = self.eval_env.reset()
@@ -236,6 +238,11 @@ class AgentTrainer:
                 else:
                     explore = False
                 a = self.agent.act(s, explore=explore)
+                # 行動を記録（連続/離散両対応）
+                if isinstance(a, np.ndarray):
+                    all_actions.extend(np.abs(a).flatten().tolist())
+                else:
+                    all_actions.append(abs(float(a)))
                 s, r, terminated, truncated, _ = self.eval_env.step(a)
                 done = terminated or truncated
                 total += r
@@ -253,5 +260,6 @@ class AgentTrainer:
         avg_steps = float(np.mean(steps_to_goal)) if steps_to_goal else 0.0
         avg_return_success = float(np.mean(returns_success)) if returns_success else 0.0
         avg_return_fail = float(np.mean(returns_fail)) if returns_fail else 0.0
+        mean_abs_action = float(np.mean(all_actions)) if all_actions else 0.0
 
-        return avg_return, success_rate, avg_steps, avg_return_success, avg_return_fail
+        return avg_return, success_rate, avg_steps, avg_return_success, avg_return_fail, mean_abs_action
