@@ -586,7 +586,21 @@ def pendulum_stats_extractor(agent) -> str | None:
 
     AgentTrainerのログに追加する統計情報を返す。
     """
+    # まず1行目に Loss と Epsilon を表示
+    first_line_parts = []
+
+    actor_loss = getattr(agent, "last_actor_loss", None)
+    critic_loss = getattr(agent, "last_critic_loss", None)
+    if actor_loss is not None and critic_loss is not None:
+        first_line_parts.append(f"ActorLoss={actor_loss:.4f}, CriticLoss={critic_loss:.4f}")
+
+    epsilon = getattr(agent, "epsilon", None)
+    if epsilon is not None:
+        first_line_parts.append(f"ε={epsilon:.3f}")
+
     lines = []
+    if first_line_parts:
+        lines.append(", ".join(first_line_parts))
 
     # 1) V(s) の統計
     value_mean = getattr(agent, "last_value_mean", None)
@@ -626,7 +640,13 @@ def pendulum_stats_extractor(agent) -> str | None:
     if not lines:
         return None
 
-    return "\n  → " + "\n  → ".join(lines)
+    # 最初の行（Loss, ε）は同じ行に、残りは改行して表示
+    result = ""
+    if lines:
+        result = ", " + lines[0]  # Loss, ε は同じ行
+        if len(lines) > 1:
+            result += "\n  → " + "\n  → ".join(lines[1:])
+    return result
 
 
 # %% [markdown]

@@ -111,7 +111,7 @@ class AgentTrainer:
 
             # ログ出力
             if (episode + 1) % self.log_interval == 0:
-                self._log_progress(episode, total_reward, episode_rewards, avg_loss)
+                self._log_progress(episode, total_reward, episode_rewards)
 
             # 評価
             if (episode + 1) % self.eval_interval == 0:
@@ -193,19 +193,9 @@ class AgentTrainer:
         episode: int,
         total_reward: float,
         episode_rewards: list[float],
-        avg_loss: float,
     ):
         """進捗をログ出力"""
         avg_reward = np.mean(episode_rewards[-self.log_interval :])
-        epsilon = getattr(self.agent, "epsilon", 0.0)
-
-        # Actor/Critic lossがあれば表示
-        actor_loss = getattr(self.agent, "last_actor_loss", None)
-        critic_loss = getattr(self.agent, "last_critic_loss", None)
-
-        loss_str = f"Loss = {avg_loss:.4f}"
-        if actor_loss is not None and critic_loss is not None:
-            loss_str = f"ActorLoss = {actor_loss:.4f}, CriticLoss = {critic_loss:.4f}"
 
         # 外部から注入された統計抽出関数を使用
         extra_stats = ""
@@ -216,8 +206,7 @@ class AgentTrainer:
 
         print(
             f"Episode {episode + 1}: Reward = {total_reward:.2f}, "
-            f"Avg({self.log_interval}) = {avg_reward:.2f}, {loss_str}, "
-            f"Epsilon = {epsilon:.3f}{extra_stats}"
+            f"Avg({self.log_interval}) = {avg_reward:.2f}{extra_stats}"
         )
 
     def evaluate(
