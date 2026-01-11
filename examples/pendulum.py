@@ -14,7 +14,7 @@ from IPython.display import HTML
 from dpl import Variable
 import dpl.functions as F
 import dpl.layers as L
-from dpl.optimizers import Adam
+from dpl.optimizers import Adam, GradientClip
 
 from dpl.agent import BaseAgent, ReplayBuffer
 from dpl.agent_trainer import AgentTrainer, GymEnvWrapper, EvalResult
@@ -150,10 +150,12 @@ class A2CAgent(BaseAgent):
             state_dim, action_dim, hidden_dim, action_scale
         )
         self.actor_optimizer = Adam(lr=actor_lr).setup(self.policy)
+        self.actor_optimizer.add_hook(GradientClip(max_norm=0.5))
 
         # Critic（価値関数ネットワーク）
         self.critic = ValueNetwork(state_dim, hidden_dim)
         self.critic_optimizer = Adam(lr=critic_lr).setup(self.critic)
+        self.critic_optimizer.add_hook(GradientClip(max_norm=0.5))
 
         # N-step用バッファ
         self.states: list[np.ndarray] = []
