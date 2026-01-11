@@ -1,7 +1,7 @@
 # %% [markdown]
 # # Pendulum-v1 強化学習
 #
-# REINFORCE（モンテカルロ方策勾配）による連続行動空間の学習
+# A2C（Advantage Actor-Critic）による連続行動空間の学習
 # dpl（自作NNライブラリ）を使用
 
 # %%
@@ -33,19 +33,15 @@ from dpl.agent_trainer import AgentTrainer, GymEnvWrapper
 # | truncated | 200ステップでTrue |
 
 # %% [markdown]
-# ## REINFORCE with Baseline（Advantage Actor-Critic）
+# ## A2C（Advantage Actor-Critic）
 #
-# Baseline（価値関数 V(s)）付きの方策勾配法。
+# TD誤差ベースのActor-Critic。Nステップごとに更新。
 #
 # - Actor（方策）: π(a|s) = N(μ(s), σ(s))
 # - Critic（価値関数）: V(s) → 状態の期待リターンを推定
-# - Advantage: A_t = G_t - V(s_t)
+# - Advantage: A_t = r_t + γV(s_{t+1}) - V(s_t)（TD誤差）
 # - Actor損失: -E[log π(a|s) * A_t]
-# - Critic損失: MSE(V(s), G_t)
-#
-# 役割分担:
-# - Actor: "どの行動が期待より良かったか" を advantage で学ぶ
-# - Critic: "その状態の期待値" を回帰で学ぶ
+# - Critic損失: MSE(V(s), r + γV(s'))
 
 
 # %%
@@ -122,246 +118,6 @@ class ValueNetwork(Layer):
     def predict(self, state: Variable) -> Variable:
         """状態から価値を出力"""
         return self.net.apply(state)
-
-
-# %%
-class ReinforceAgent(BaseAgent):
-    """REINFORCE エージェント
-
-    モンテカルロ方策勾配。エピソード終了後にまとめて更新。
-    dpl（自作NNライブラリ）を使用。
-    """
-
-    def __init__(
-        self,
-        state_dim: int = 3,
-        action_dim: int = 1,
-        hidden_dim: int = 64,
-        action_scale: float = 2.0,
-        actor_lr: float = 3e-4,
-        critic_lr: float = 1e-3,
-        gamma: float = 0.99,
-        critic_update_steps: int = 10,
-    ):
-        self.gamma = gamma
-        self.action_scale = action_scale
-        self.critic_update_steps = critic_update_steps
-
-        # Actor（方策ネットワーク）
-        self.policy = GaussianPolicy(
-            state_dim, action_dim, hidden_dim, action_scale
-        )
-        self.actor_optimizer = Adam(lr=actor_lr).setup(self.policy)
-
-        # Critic（価値関数ネットワーク）
-        self.critic = ValueNetwork(state_dim, hidden_dim)
-        self.critic_optimizer = Adam(lr=critic_lr).setup(self.critic)
-
-        # エピソード内のトラジェクトリ
-        self.episode_states: list[np.ndarray] = []
-        self.episode_actions: list[np.ndarray] = []
-        self.episode_rewards: list[float] = []
-
-        # ダミーバッファ（インターフェース互換用）
-        self.buffer = ReplayBuffer(capacity=1, continuous_action=True)
-
-        # 最新のloss（モニタリング用）
-        self.last_actor_loss: float | None = None
-        self.last_critic_loss: float | None = None
-
-    def get_action(self, state: np.ndarray) -> np.ndarray:
-        return self.act(state, explore=True)
-
-    def act(self, state: np.ndarray, explore: bool = True) -> np.ndarray:
-        state_v = Variable(state.reshape(1, -1).astype(np.float32))
-        mean, std = self.policy.predict(state_v)
-
-        if explore:
-            # サンプリング
-            eps = np.random.randn(*mean.shape).astype(np.float32)
-            raw_action = mean.data_required + std.data_required * eps
-        else:
-            raw_action = mean.data_required
-
-        # tanh スケーリング
-        action = self.action_scale * np.tanh(raw_action)
-        return action.flatten().astype(np.float32)
-
-    def store(
-        self,
-        state: np.ndarray,
-        action: np.ndarray,
-        reward: float,
-        next_state: np.ndarray,
-        done: bool,
-        *,
-        terminated=None,
-    ):
-        # state と action を保存（log_prob は後で計算）
-        self.episode_states.append(state)
-        self.episode_actions.append(action)
-        self.episode_rewards.append(reward)
-
-    def update(self) -> dict | None:
-        """エピソード終了時に呼ばれる想定だが、
-        AgentTrainer はステップごとに呼ぶので、
-        end_episode で実際の更新を行う"""
-        return None
-
-    def start_episode(self):
-        """エピソード開始時にトラジェクトリをクリア"""
-        self.episode_states = []
-        self.episode_actions = []
-        self.episode_rewards = []
-
-    def _compute_log_prob(
-        self, states: Variable, actions: np.ndarray
-    ) -> Variable:
-        """行動に対する log_prob を計算（tanh 補正込み）"""
-        mean, std = self.policy.predict(states)
-
-        # action から raw_action を逆算
-        # action = action_scale * tanh(raw) → raw = atanh(action / action_scale)
-        # 数値安定性のため clamp
-        action_normalized = np.clip(actions / self.action_scale, -0.999, 0.999)
-        raw_action = np.arctanh(action_normalized)
-        raw_action_v = Variable(raw_action.astype(np.float32))
-
-        # log_prob 計算: log N(raw | mean, std)
-        # = -0.5 * log(2π) - log(std) - 0.5 * ((raw - mean) / std)^2
-        diff = raw_action_v - mean
-        log_prob = -0.5 * np.log(2 * np.pi) - F.log(std) - 0.5 * (diff / std) ** 2
-
-        # tanh の jacobian 補正: -log(action_scale * (1 - tanh(raw)^2))
-        tanh_raw = F.tanh(raw_action_v)
-        jacobian_correction = F.log(
-            Variable(np.full_like(raw_action, self.action_scale, dtype=np.float32))
-            * (Variable(np.ones_like(raw_action, dtype=np.float32)) - tanh_raw * tanh_raw)
-            + Variable(np.full_like(raw_action, 1e-6, dtype=np.float32))
-        )
-        log_prob = log_prob - jacobian_correction
-
-        # 行動次元で sum
-        log_prob = log_prob.sum(axis=1)
-
-        return log_prob
-
-    def end_episode(self):
-        """エピソード終了時にActor/Criticを更新"""
-        if len(self.episode_rewards) == 0:
-            return
-
-        # モンテカルロリターンを計算
-        returns = []
-        G = 0.0
-        for r in reversed(self.episode_rewards):
-            G = r + self.gamma * G
-            returns.insert(0, G)
-
-        returns = np.array(returns, dtype=np.float32)
-
-        # G_t のモニタリング（デバッグ用）
-        self.last_return_min = float(returns.min())
-        self.last_return_max = float(returns.max())
-        self.last_return_mean = float(returns.mean())
-
-        # デバッグ: returns の妥当性チェック
-        self.last_num_rewards = len(self.episode_rewards)
-        self.last_sum_rewards = float(sum(self.episode_rewards))
-        self.last_return_first = float(returns[0])  # G_0 ≈ sum(rewards) if γ≈1
-        self.last_return_last = float(returns[-1])  # G_T ≈ r_T（終端一歩分）
-        self.last_reward_last = float(self.episode_rewards[-1])  # r_T
-
-        returns_v = Variable(returns.reshape(-1, 1))
-
-        # states, actions をテンソルに変換
-        states_np = np.array(self.episode_states, dtype=np.float32)
-        states = Variable(states_np)
-        actions = np.array(self.episode_actions, dtype=np.float32)
-
-        # デバッグ: states の多様性チェック
-        self.last_states_shape = states_np.shape  # 期待: (T, 3)
-        self.last_states_std_per_dim = states_np.std(axis=0).tolist()  # 各次元のstd
-        self.last_states_mean_per_dim = states_np.mean(axis=0).tolist()
-
-        # Critic: V(s) を計算
-        values = self.critic.predict(states)  # shape: (T, 1)
-
-        # 1) V(s) の統計（デバッグ用）
-        values_np = values.data_required.reshape(-1)
-        self.last_value_mean = float(values_np.mean())
-        self.last_value_std = float(values_np.std())
-        self.last_value_min = float(values_np.min())
-        self.last_value_max = float(values_np.max())
-        # target（G_t）の統計
-        self.last_target_mean = float(returns.mean())
-        self.last_target_std = float(returns.std())
-
-        # Advantage: A_t = G_t - V(s_t)
-        # .data_required で計算グラフから切り離す（Actor更新時にCriticの勾配が流れないように）
-        advantages = returns_v.data_required - values.data_required
-        advantages = advantages.reshape(-1)
-
-        # 2) Advantage の統計（正規化前）
-        self.last_adv_mean_raw = float(advantages.mean())
-        self.last_adv_std_raw = float(advantages.std())
-        self.last_adv_min_raw = float(advantages.min())
-        self.last_adv_max_raw = float(advantages.max())
-
-        # Advantageの正規化（分散削減）
-        if len(advantages) > 1:
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-        advantages_v = Variable(advantages.astype(np.float32))
-
-        # 3) 方策の std の統計
-        _, std = self.policy.predict(states)
-        std_np = std.data_required.reshape(-1)
-        self.last_policy_std_mean = float(std_np.mean())
-        self.last_policy_std_min = float(std_np.min())
-        self.last_policy_std_max = float(std_np.max())
-
-        # --- Actor更新 ---
-        log_probs = self._compute_log_prob(states, actions)
-        actor_loss = -(log_probs * advantages_v).sum() / len(returns)
-
-        self.policy.cleargrads()
-        actor_loss.backward()
-        self.actor_optimizer.update()
-
-        # --- Critic更新（複数回） ---
-        # 損失: MSE(V(s), G_t)
-        critic_loss_value = 0.0
-        for _ in range(self.critic_update_steps):
-            values = self.critic.predict(states)
-            critic_loss = ((values - returns_v) ** 2).sum() / len(returns)
-            critic_loss_value = float(critic_loss.data_required)
-
-            self.critic.cleargrads()
-            critic_loss.backward()
-            self.critic_optimizer.update()
-
-        # lossを保存（モニタリング用）
-        self.last_actor_loss = float(actor_loss.data_required)
-        self.last_critic_loss = critic_loss_value
-
-        # トラジェクトリをクリア
-        self.episode_states = []
-        self.episode_actions = []
-        self.episode_rewards = []
-
-
-# %% [markdown]
-# ## A2C（Advantage Actor-Critic）
-#
-# TD誤差ベースのActor-Critic。ステップごとに更新可能。
-#
-# - Advantage: A_t = r_t + γV(s_{t+1}) - V(s_t)（TD誤差）
-# - Actor損失: -E[log π(a|s) * A_t]
-# - Critic損失: MSE(V(s), r + γV(s'))
-#
-# REINFORCEとの違い:
-# - モンテカルロリターン → TD誤差（低分散・少しバイアス）
-# - エピソード終了後に一括更新 → Nステップごとに更新可能
 
 
 # %%
@@ -455,17 +211,11 @@ class A2CAgent(BaseAgent):
 
     def _update_from_buffer(self) -> dict:
         """バッファからActor/Criticを更新"""
-        states_np = np.array(self.states, dtype=np.float32)
-        states = Variable(states_np)
+        states = Variable(np.array(self.states, dtype=np.float32))
         actions = np.array(self.actions, dtype=np.float32)
         rewards = np.array(self.rewards, dtype=np.float32)
         next_states = Variable(np.array(self.next_states, dtype=np.float32))
         dones = np.array(self.dones, dtype=np.float32)
-
-        # デバッグ: states の多様性チェック
-        self.last_states_shape = states_np.shape  # 期待: (n_steps, 3)
-        self.last_states_std_per_dim = states_np.std(axis=0).tolist()  # 各次元のstd
-        self.last_states_mean_per_dim = states_np.mean(axis=0).tolist()
 
         # TD targets: r + γV(s') * (1 - done)
         next_values = self.critic.predict(next_states).data_required.reshape(-1)
@@ -475,37 +225,14 @@ class A2CAgent(BaseAgent):
         # 現在の価値
         values = self.critic.predict(states)
 
-        # 1) V(s) の統計（デバッグ用）
-        values_np = values.data_required.reshape(-1)
-        self.last_value_mean = float(values_np.mean())
-        self.last_value_std = float(values_np.std())
-        self.last_value_min = float(values_np.min())
-        self.last_value_max = float(values_np.max())
-        # target（TD target）の統計
-        self.last_target_mean = float(td_targets.mean())
-        self.last_target_std = float(td_targets.std())
-
         # TD誤差（Advantage）
         advantages = td_targets_v.data_required - values.data_required
         advantages = advantages.reshape(-1)
-
-        # 2) Advantage の統計（正規化前）
-        self.last_adv_mean_raw = float(advantages.mean())
-        self.last_adv_std_raw = float(advantages.std())
-        self.last_adv_min_raw = float(advantages.min())
-        self.last_adv_max_raw = float(advantages.max())
 
         # Advantageの正規化
         if len(advantages) > 1:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         advantages_v = Variable(advantages.astype(np.float32))
-
-        # 3) 方策の std の統計
-        _, std = self.policy.predict(states)
-        std_np = std.data_required.reshape(-1)
-        self.last_policy_std_mean = float(std_np.mean())
-        self.last_policy_std_min = float(std_np.min())
-        self.last_policy_std_max = float(std_np.max())
 
         # --- Actor更新 ---
         log_probs = self._compute_log_prob(states, actions)
@@ -578,94 +305,42 @@ class A2CAgent(BaseAgent):
 
 
 # %% [markdown]
-# ## Pendulum用の統計抽出関数
+# ## 統計抽出関数
 
 # %%
 def pendulum_stats_extractor(agent) -> str | None:
-    """Pendulum Agent用の統計抽出関数
-
-    AgentTrainerのログに追加する統計情報を返す。
-    """
-    # まず1行目に Loss と Epsilon を表示
-    first_line_parts = []
+    """Pendulum Agent用の統計抽出関数"""
+    parts = []
 
     actor_loss = getattr(agent, "last_actor_loss", None)
     critic_loss = getattr(agent, "last_critic_loss", None)
     if actor_loss is not None and critic_loss is not None:
-        first_line_parts.append(f"ActorLoss={actor_loss:.4f}, CriticLoss={critic_loss:.4f}")
+        parts.append(f"ActorLoss={actor_loss:.4f}, CriticLoss={critic_loss:.4f}")
 
-    epsilon = getattr(agent, "epsilon", None)
-    if epsilon is not None:
-        first_line_parts.append(f"ε={epsilon:.3f}")
-
-    lines = []
-    if first_line_parts:
-        lines.append(", ".join(first_line_parts))
-
-    # 1) V(s) の統計
-    value_mean = getattr(agent, "last_value_mean", None)
-    if value_mean is not None:
-        value_std = getattr(agent, "last_value_std", 0)
-        value_min = getattr(agent, "last_value_min", 0)
-        value_max = getattr(agent, "last_value_max", 0)
-        target_mean = getattr(agent, "last_target_mean", 0)
-        target_std = getattr(agent, "last_target_std", 0)
-        lines.append(
-            f"V(s): mean={value_mean:.1f} std={value_std:.1f} [{value_min:.1f}, {value_max:.1f}]"
-            f" | Target: mean={target_mean:.1f} std={target_std:.1f}"
-        )
-
-    # 2) Advantage の統計（正規化前）
-    adv_mean = getattr(agent, "last_adv_mean_raw", None)
-    if adv_mean is not None:
-        adv_std = getattr(agent, "last_adv_std_raw", 0)
-        adv_min = getattr(agent, "last_adv_min_raw", 0)
-        adv_max = getattr(agent, "last_adv_max_raw", 0)
-        lines.append(f"Adv(raw): mean={adv_mean:.2f} std={adv_std:.2f} [{adv_min:.2f}, {adv_max:.2f}]")
-
-    # 3) 方策の std の統計
-    policy_std_mean = getattr(agent, "last_policy_std_mean", None)
-    if policy_std_mean is not None:
-        policy_std_min = getattr(agent, "last_policy_std_min", 0)
-        policy_std_max = getattr(agent, "last_policy_std_max", 0)
-        lines.append(f"Policy σ: mean={policy_std_mean:.3f} [{policy_std_min:.3f}, {policy_std_max:.3f}]")
-
-    # 4) States の多様性チェック
-    states_shape = getattr(agent, "last_states_shape", None)
-    if states_shape is not None:
-        states_std = getattr(agent, "last_states_std_per_dim", [])
-        std_str = ", ".join([f"{s:.3f}" for s in states_std])
-        lines.append(f"States: shape={states_shape}, std=[{std_str}]")
-
-    if not lines:
+    if not parts:
         return None
 
-    # 最初の行（Loss, ε）は同じ行に、残りは改行して表示
-    result = ""
-    if lines:
-        result = ", " + lines[0]  # Loss, ε は同じ行
-        if len(lines) > 1:
-            result += "\n  → " + "\n  → ".join(lines[1:])
-    return result
+    return ", " + ", ".join(parts)
 
 
 # %% [markdown]
-# ## 実行：REINFORCE with Baseline
+# ## 実行：A2C
 
 # %%
-print("=== Pendulum-v1 REINFORCE with Baseline (dpl) ===")
+print("=== Pendulum-v1 A2C (dpl) ===")
 print()
 
-# REINFORCE with Baseline エージェント
-agent = ReinforceAgent(
+# A2C エージェント
+agent = A2CAgent(
     state_dim=3,
     action_dim=1,
     hidden_dim=64,
     action_scale=2.0,
     actor_lr=3e-4,
-    critic_lr=1e-3,  # criticを強く
+    critic_lr=1e-3,
     gamma=0.99,
-    critic_update_steps=10,  # criticを複数回更新
+    n_steps=5,
+    critic_update_steps=5,
 )
 
 # %%
@@ -674,7 +349,6 @@ env = GymEnvWrapper(gym.make("Pendulum-v1"))
 eval_env = GymEnvWrapper(gym.make("Pendulum-v1"))
 
 # AgentTrainerで学習
-# REINFORCEはエピソード単位で更新するので update_every は大きくてOK
 trainer = AgentTrainer(
     env=env,
     eval_env=eval_env,
@@ -682,7 +356,7 @@ trainer = AgentTrainer(
     num_episodes=500,
     eval_interval=50,
     eval_n=10,
-    update_every=9999,  # end_episode で更新するので使わない
+    update_every=1,
     log_interval=50,
     stats_extractor=pendulum_stats_extractor,
 )
@@ -703,7 +377,6 @@ fig, axes = plt.subplots(1, 2, figsize=(12, 4))
 
 # Episode Returns（移動平均付き）
 axes[0].plot(result.episode_rewards, alpha=0.3, label="Episode")
-# 移動平均
 window = 20
 if len(result.episode_rewards) >= window:
     moving_avg = np.convolve(
@@ -743,7 +416,6 @@ for _ in range(200):
     frame = render_env.render()
     frames.append(frame)
 
-    # explore=False で決定的行動を確認
     action = agent.act(obs, explore=False)
     obs, _, terminated, truncated, _ = render_env.step(action)
 
@@ -768,122 +440,3 @@ anim = animation.FuncAnimation(fig, update, frames=len(frames), interval=50, bli
 plt.close(fig)
 
 HTML(anim.to_jshtml())
-
-# %% [markdown]
-# ---
-# ## 実行：A2C
-
-# %%
-print("=== Pendulum-v1 A2C (dpl) ===")
-print()
-
-# A2C エージェント
-a2c_agent = A2CAgent(
-    state_dim=3,
-    action_dim=1,
-    hidden_dim=64,
-    action_scale=2.0,
-    actor_lr=3e-4,
-    critic_lr=1e-3,  # criticを強く
-    gamma=0.99,
-    n_steps=5,
-    critic_update_steps=5,  # criticを複数回更新
-)
-
-# %%
-# 環境をラップ
-a2c_env = GymEnvWrapper(gym.make("Pendulum-v1"))
-a2c_eval_env = GymEnvWrapper(gym.make("Pendulum-v1"))
-
-# AgentTrainerで学習
-# A2CはNステップごとに更新
-a2c_trainer = AgentTrainer(
-    env=a2c_env,
-    eval_env=a2c_eval_env,
-    agent=a2c_agent,
-    num_episodes=500,
-    eval_interval=50,
-    eval_n=10,
-    update_every=1,  # 毎ステップupdate()を呼ぶ（内部でn_steps待つ）
-    log_interval=50,
-    stats_extractor=pendulum_stats_extractor,
-)
-
-# %%
-a2c_result = a2c_trainer.train()
-
-# %%
-print()
-print(f"Total episodes: {len(a2c_result.episode_rewards)}")
-print(f"Eval checkpoints: {len(a2c_result.eval_returns)}")
-
-# %% [markdown]
-# ## A2C 学習曲線
-
-# %%
-fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-
-# Episode Returns（移動平均付き）
-axes[0].plot(a2c_result.episode_rewards, alpha=0.3, label="Episode")
-window = 20
-if len(a2c_result.episode_rewards) >= window:
-    moving_avg = np.convolve(
-        a2c_result.episode_rewards, np.ones(window) / window, mode="valid"
-    )
-    axes[0].plot(
-        range(window - 1, len(a2c_result.episode_rewards)), moving_avg, label=f"MA({window})"
-    )
-axes[0].set_xlabel("Episode")
-axes[0].set_ylabel("Return")
-axes[0].set_title("A2C Episode Returns")
-axes[0].legend()
-axes[0].grid(True)
-
-# Eval Returns
-if a2c_result.eval_returns:
-    episodes, means = zip(*a2c_result.eval_returns)
-    axes[1].plot(episodes, means, marker="o")
-    axes[1].set_xlabel("Episode")
-    axes[1].set_ylabel("Eval Return")
-    axes[1].set_title("A2C Evaluation Returns (explore=False)")
-    axes[1].grid(True)
-
-plt.tight_layout()
-plt.show()
-
-# %% [markdown]
-# ## A2C エージェントの動作をアニメーション表示
-
-# %%
-# フレームを収集
-a2c_render_env = gym.make("Pendulum-v1", render_mode="rgb_array")
-a2c_frames = []
-
-obs, _ = a2c_render_env.reset()
-for _ in range(200):
-    frame = a2c_render_env.render()
-    a2c_frames.append(frame)
-
-    action = a2c_agent.act(obs, explore=False)
-    obs, _, terminated, truncated, _ = a2c_render_env.step(action)
-
-    if terminated or truncated:
-        break
-
-a2c_render_env.close()
-
-# %%
-fig, ax = plt.subplots(figsize=(4, 4))
-ax.axis("off")
-img = ax.imshow(a2c_frames[0])
-
-
-def update_a2c(frame_idx):
-    img.set_array(a2c_frames[frame_idx])
-    return [img]
-
-
-a2c_anim = animation.FuncAnimation(fig, update_a2c, frames=len(a2c_frames), interval=50, blit=True)
-plt.close(fig)
-
-HTML(a2c_anim.to_jshtml())
