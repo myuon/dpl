@@ -1,7 +1,7 @@
 # %% [markdown]
 # # Pendulum-v1 強化学習
 #
-# A2C（Advantage Actor-Critic）による連続行動空間の学習
+# A2C + GAE（Generalized Advantage Estimation）による連続行動空間の学習
 # dpl（自作NNライブラリ）を使用
 
 # %%
@@ -33,15 +33,16 @@ from dpl.agent_trainer import AgentTrainer, GymEnvWrapper, EvalResult
 # | truncated | 200ステップでTrue |
 
 # %% [markdown]
-# ## A2C（Advantage Actor-Critic）
+# ## A2C + GAE（Generalized Advantage Estimation）
 #
-# TD誤差ベースのActor-Critic。Nステップごとに更新。
+# GAEを使用したActor-Critic。Nステップごとに更新。
 #
 # - Actor（方策）: π(a|s) = N(μ(s), σ(s))
 # - Critic（価値関数）: V(s) → 状態の期待リターンを推定
-# - Advantage: A_t = r_t + γV(s_{t+1}) - V(s_t)（TD誤差）
+# - TD誤差: δ_t = r_t + γV(s_{t+1}) - V(s_t)
+# - GAE Advantage: A_t = Σ (γλ)^l δ_{t+l}（λ=0.95でバイアス-分散トレードオフ）
 # - Actor損失: -E[log π(a|s) * A_t]
-# - Critic損失: MSE(V(s), r + γV(s'))
+# - Critic損失: MSE(V(s), A_t + V(s_t))
 
 
 # %%
@@ -61,8 +62,8 @@ class GaussianPolicy(Layer):
         action_dim: int,
         hidden_dim: int = 64,
         action_scale: float = 2.0,
-        log_std_min: float = -5.0,
-        log_std_max: float = 1.0,
+        log_std_min: float = -2.0,
+        log_std_max: float = 0.5,
     ):
         super().__init__()
         self.action_scale = action_scale
@@ -122,9 +123,9 @@ class ValueNetwork(Layer):
 
 # %%
 class A2CAgent(BaseAgent):
-    """A2C（Advantage Actor-Critic）エージェント
+    """A2C（Advantage Actor-Critic）+ GAE エージェント
 
-    TD誤差ベースのActor-Critic。Nステップごとに更新。
+    GAE（Generalized Advantage Estimation）を使用したActor-Critic。
     dpl（自作NNライブラリ）を使用。
     """
 
@@ -137,18 +138,18 @@ class A2CAgent(BaseAgent):
         actor_lr: float = 3e-4,
         critic_lr: float = 1e-3,
         gamma: float = 0.99,
+        gae_lambda: float = 0.95,
         n_steps: int = 5,
         critic_update_steps: int = 5,
     ):
         self.gamma = gamma
+        self.gae_lambda = gae_lambda
         self.action_scale = action_scale
         self.n_steps = n_steps
         self.critic_update_steps = critic_update_steps
 
         # Actor（方策ネットワーク）
-        self.policy = GaussianPolicy(
-            state_dim, action_dim, hidden_dim, action_scale
-        )
+        self.policy = GaussianPolicy(state_dim, action_dim, hidden_dim, action_scale)
         self.actor_optimizer = Adam(lr=actor_lr).setup(self.policy)
         self.actor_optimizer.add_hook(GradientClip(max_norm=0.5))
 
@@ -170,6 +171,11 @@ class A2CAgent(BaseAgent):
         # 最新のloss（モニタリング用）
         self.last_actor_loss: float | None = None
         self.last_critic_loss: float | None = None
+
+        # 統計履歴（可視化用）
+        self.history_a_raw_std: list[float] = []
+        self.history_delta_std: list[float] = []
+        self.history_log_std_mean: list[float] = []
 
     def get_action(self, state: np.ndarray) -> np.ndarray:
         return self.act(state, explore=True)
@@ -212,24 +218,38 @@ class A2CAgent(BaseAgent):
         return self._update_from_buffer()
 
     def _update_from_buffer(self) -> dict:
-        """バッファからActor/Criticを更新"""
+        """バッファからActor/Criticを更新（GAE使用）"""
         states = Variable(np.array(self.states, dtype=np.float32))
         actions = np.array(self.actions, dtype=np.float32)
         rewards = np.array(self.rewards, dtype=np.float32)
         next_states = Variable(np.array(self.next_states, dtype=np.float32))
         dones = np.array(self.dones, dtype=np.float32)
 
-        # TD targets: r + γV(s') * (1 - done)
+        # 価値を計算
+        values = self.critic.predict(states).data_required.reshape(-1)
         next_values = self.critic.predict(next_states).data_required.reshape(-1)
-        td_targets = rewards + self.gamma * next_values * (1 - dones)
-        td_targets_v = Variable(td_targets.reshape(-1, 1).astype(np.float32))
 
-        # 現在の価値
-        values = self.critic.predict(states)
+        # GAE（Generalized Advantage Estimation）を計算
+        # δ_t = r_t + γV(s_{t+1}) - V(s_t)
+        # A_t^GAE = Σ (γλ)^l * δ_{t+l}
+        deltas = rewards + self.gamma * next_values * (1 - dones) - values
+        advantages = np.zeros_like(rewards)
+        gae = 0.0
+        for t in reversed(range(len(rewards))):
+            gae = deltas[t] + self.gamma * self.gae_lambda * (1 - dones[t]) * gae
+            advantages[t] = gae
 
-        # TD誤差（Advantage）
-        advantages = td_targets_v.data_required - values.data_required
-        advantages = advantages.reshape(-1)
+        # リターン（Critic学習用）: G_t = A_t^GAE + V(s_t)
+        returns = advantages + values
+        returns_v = Variable(returns.reshape(-1, 1).astype(np.float32))
+
+        # 統計記録（正規化前）
+        self.history_a_raw_std.append(float(advantages.std()))
+        self.history_delta_std.append(float(deltas.std()))
+        # log_std を取得（policy から）
+        _, std = self.policy.predict(states)
+        log_std = np.log(std.data_required + 1e-8)
+        self.history_log_std_mean.append(float(log_std.mean()))
 
         # Advantageの正規化
         if len(advantages) > 1:
@@ -248,7 +268,7 @@ class A2CAgent(BaseAgent):
         critic_loss_value = 0.0
         for _ in range(self.critic_update_steps):
             values = self.critic.predict(states)
-            critic_loss = ((values - td_targets_v) ** 2).sum() / len(self.states)
+            critic_loss = ((values - returns_v) ** 2).sum() / len(self.states)
             critic_loss_value = float(critic_loss.data_required)
 
             self.critic.cleargrads()
@@ -266,11 +286,12 @@ class A2CAgent(BaseAgent):
         self.next_states = []
         self.dones = []
 
-        return {"actor_loss": self.last_actor_loss, "critic_loss": self.last_critic_loss}
+        return {
+            "actor_loss": self.last_actor_loss,
+            "critic_loss": self.last_critic_loss,
+        }
 
-    def _compute_log_prob(
-        self, states: Variable, actions: np.ndarray
-    ) -> Variable:
+    def _compute_log_prob(self, states: Variable, actions: np.ndarray) -> Variable:
         """行動に対する log_prob を計算（tanh 補正込み）"""
         mean, std = self.policy.predict(states)
 
@@ -284,7 +305,10 @@ class A2CAgent(BaseAgent):
         tanh_raw = F.tanh(raw_action_v)
         jacobian_correction = F.log(
             Variable(np.full_like(raw_action, self.action_scale, dtype=np.float32))
-            * (Variable(np.ones_like(raw_action, dtype=np.float32)) - tanh_raw * tanh_raw)
+            * (
+                Variable(np.ones_like(raw_action, dtype=np.float32))
+                - tanh_raw * tanh_raw
+            )
             + Variable(np.full_like(raw_action, 1e-6, dtype=np.float32))
         )
         log_prob = log_prob - jacobian_correction
@@ -309,6 +333,7 @@ class A2CAgent(BaseAgent):
 # %% [markdown]
 # ## 統計抽出関数
 
+
 # %%
 def pendulum_stats_extractor(agent) -> str | None:
     """Pendulum Agent用の統計抽出関数"""
@@ -331,21 +356,22 @@ def pendulum_eval_stats_extractor(result: EvalResult) -> str:
 
 
 # %% [markdown]
-# ## 実行：A2C
+# ## 実行：A2C + GAE
 
 # %%
-print("=== Pendulum-v1 A2C (dpl) ===")
+print("=== Pendulum-v1 A2C + GAE (dpl) ===")
 print()
 
-# A2C エージェント
+# A2C + GAE エージェント
 agent = A2CAgent(
     state_dim=3,
     action_dim=1,
     hidden_dim=64,
     action_scale=2.0,
-    actor_lr=3e-4,
+    actor_lr=1e-4,
     critic_lr=1e-3,
     gamma=0.99,
+    gae_lambda=0.95,
     n_steps=5,
     critic_update_steps=5,
 )
@@ -389,7 +415,9 @@ if len(result.episode_rewards) >= window:
         result.episode_rewards, np.ones(window) / window, mode="valid"
     )
     axes[0].plot(
-        range(window - 1, len(result.episode_rewards)), moving_avg, label=f"MA({window})"
+        range(window - 1, len(result.episode_rewards)),
+        moving_avg,
+        label=f"MA({window})",
     )
 axes[0].set_xlabel("Episode")
 axes[0].set_ylabel("Return")
@@ -405,6 +433,48 @@ if result.eval_returns:
     axes[1].set_ylabel("Eval Return")
     axes[1].set_title("Evaluation Returns (explore=False)")
     axes[1].grid(True)
+
+plt.tight_layout()
+plt.show()
+
+# %% [markdown]
+# ## 学習統計（A_raw_std, delta_std, log_std_mean）
+
+# %%
+fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+
+# A_raw_std（正規化前のAdvantageの標準偏差）
+axes[0].plot(agent.history_a_raw_std, alpha=0.5)
+if len(agent.history_a_raw_std) >= 20:
+    ma = np.convolve(agent.history_a_raw_std, np.ones(20) / 20, mode="valid")
+    axes[0].plot(range(19, len(agent.history_a_raw_std)), ma, label="MA(20)")
+axes[0].set_xlabel("Update Step")
+axes[0].set_ylabel("Std")
+axes[0].set_title("A_raw_std (Advantage before norm)")
+axes[0].grid(True)
+axes[0].legend()
+
+# delta_std（TD誤差の標準偏差）
+axes[1].plot(agent.history_delta_std, alpha=0.5)
+if len(agent.history_delta_std) >= 20:
+    ma = np.convolve(agent.history_delta_std, np.ones(20) / 20, mode="valid")
+    axes[1].plot(range(19, len(agent.history_delta_std)), ma, label="MA(20)")
+axes[1].set_xlabel("Update Step")
+axes[1].set_ylabel("Std")
+axes[1].set_title("delta_std (TD error std)")
+axes[1].grid(True)
+axes[1].legend()
+
+# log_std_mean（方策のlog標準偏差の平均）
+axes[2].plot(agent.history_log_std_mean, alpha=0.5)
+if len(agent.history_log_std_mean) >= 20:
+    ma = np.convolve(agent.history_log_std_mean, np.ones(20) / 20, mode="valid")
+    axes[2].plot(range(19, len(agent.history_log_std_mean)), ma, label="MA(20)")
+axes[2].set_xlabel("Update Step")
+axes[2].set_ylabel("log_std")
+axes[2].set_title("log_std_mean (Policy exploration)")
+axes[2].grid(True)
+axes[2].legend()
 
 plt.tight_layout()
 plt.show()
