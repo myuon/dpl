@@ -6,6 +6,7 @@
 import numpy as np
 from collections import deque
 from dataclasses import dataclass
+from typing import Callable
 
 import dpl.layers as L
 import dpl.functions as F
@@ -791,7 +792,8 @@ class DQNAgent(BaseAgent):
         gamma: float = 0.99,
         epsilon: float = 1.0,
         epsilon_min: float = 0.10,
-        epsilon_decay: float = 0.998,  # per episode
+        epsilon_decay: float = 0.995,  # per episode
+        epsilon_min_fn: Callable[[int], float] | None = None,  # カスタムepsilon_minスケジュール
         lr: float = 1e-3,
         batch_size: int = 32,
         buffer_size: int = 10000,
@@ -810,6 +812,8 @@ class DQNAgent(BaseAgent):
         self.epsilon = epsilon
         self.epsilon_min = epsilon_min
         self.epsilon_decay = epsilon_decay
+        self.epsilon_min_fn = epsilon_min_fn
+        self.episode_count = 0
         self.batch_size = batch_size
         self.tau = tau
         self.target_update_freq = target_update_freq
@@ -1107,8 +1111,19 @@ class DQNAgent(BaseAgent):
 
     def decay_epsilon(self):
         """エピソード終了時にepsilonを減衰"""
-        if self.epsilon > self.epsilon_min:
-            self.epsilon *= self.epsilon_decay
+        # epsilon_min を決定（epsilon_min_fn があればそれを使用）
+        if self.epsilon_min_fn is not None:
+            current_min = self.epsilon_min_fn(self.episode_count)
+        else:
+            current_min = self.epsilon_min
+
+        # 指数減衰
+        self.epsilon *= self.epsilon_decay
+        # 下限でクリップ
+        if self.epsilon < current_min:
+            self.epsilon = current_min
+
+        self.episode_count += 1
 
 
 # %% Evaluation Function
@@ -1293,13 +1308,32 @@ else:
     env = base_env
     eval_env = base_eval_env
 
-agent = DQNAgent(state_size=env.state_size)
+
+# カスタムepsilon_minスケジュール
+# 前半: epsilon_min=0.10 で通常の探索
+# 後半: epsilon_min=0.03 に下げて "greedy詰め" フェーズ
+def epsilon_min_schedule(episode: int) -> float:
+    """2段階のepsilon_minスケジュール"""
+    phase2_start = 1000  # greedy詰めフェーズ開始エピソード
+    if episode < phase2_start:
+        return 0.10
+    else:
+        return 0.03
+
+
+agent = DQNAgent(
+    state_size=env.state_size,
+    burn_in=10,
+    seq_len=40,
+    epsilon_min_fn=epsilon_min_schedule,
+)
+
 
 trainer = AgentTrainer(
     env=env,
     eval_env=eval_env,
     agent=agent,
-    num_episodes=3500,
+    num_episodes=1500,
     eval_interval=50,
     eval_n=200,
 )
