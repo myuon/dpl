@@ -578,6 +578,58 @@ class A2CAgent(BaseAgent):
 
 
 # %% [markdown]
+# ## Pendulum用の統計抽出関数
+
+# %%
+def pendulum_stats_extractor(agent) -> str | None:
+    """Pendulum Agent用の統計抽出関数
+
+    AgentTrainerのログに追加する統計情報を返す。
+    """
+    lines = []
+
+    # 1) V(s) の統計
+    value_mean = getattr(agent, "last_value_mean", None)
+    if value_mean is not None:
+        value_std = getattr(agent, "last_value_std", 0)
+        value_min = getattr(agent, "last_value_min", 0)
+        value_max = getattr(agent, "last_value_max", 0)
+        target_mean = getattr(agent, "last_target_mean", 0)
+        target_std = getattr(agent, "last_target_std", 0)
+        lines.append(
+            f"V(s): mean={value_mean:.1f} std={value_std:.1f} [{value_min:.1f}, {value_max:.1f}]"
+            f" | Target: mean={target_mean:.1f} std={target_std:.1f}"
+        )
+
+    # 2) Advantage の統計（正規化前）
+    adv_mean = getattr(agent, "last_adv_mean_raw", None)
+    if adv_mean is not None:
+        adv_std = getattr(agent, "last_adv_std_raw", 0)
+        adv_min = getattr(agent, "last_adv_min_raw", 0)
+        adv_max = getattr(agent, "last_adv_max_raw", 0)
+        lines.append(f"Adv(raw): mean={adv_mean:.2f} std={adv_std:.2f} [{adv_min:.2f}, {adv_max:.2f}]")
+
+    # 3) 方策の std の統計
+    policy_std_mean = getattr(agent, "last_policy_std_mean", None)
+    if policy_std_mean is not None:
+        policy_std_min = getattr(agent, "last_policy_std_min", 0)
+        policy_std_max = getattr(agent, "last_policy_std_max", 0)
+        lines.append(f"Policy σ: mean={policy_std_mean:.3f} [{policy_std_min:.3f}, {policy_std_max:.3f}]")
+
+    # 4) States の多様性チェック
+    states_shape = getattr(agent, "last_states_shape", None)
+    if states_shape is not None:
+        states_std = getattr(agent, "last_states_std_per_dim", [])
+        std_str = ", ".join([f"{s:.3f}" for s in states_std])
+        lines.append(f"States: shape={states_shape}, std=[{std_str}]")
+
+    if not lines:
+        return None
+
+    return "\n  → " + "\n  → ".join(lines)
+
+
+# %% [markdown]
 # ## 実行：REINFORCE with Baseline
 
 # %%
@@ -612,6 +664,7 @@ trainer = AgentTrainer(
     eval_n=10,
     update_every=9999,  # end_episode で更新するので使わない
     log_interval=50,
+    stats_extractor=pendulum_stats_extractor,
 )
 
 # %%
@@ -733,6 +786,7 @@ a2c_trainer = AgentTrainer(
     eval_n=10,
     update_every=1,  # 毎ステップupdate()を呼ぶ（内部でn_steps待つ）
     log_interval=50,
+    stats_extractor=pendulum_stats_extractor,
 )
 
 # %%

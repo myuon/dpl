@@ -1,8 +1,11 @@
-from typing import Protocol, Any
+from typing import Protocol, Any, Callable
 from dataclasses import dataclass
 import numpy as np
 
 from dpl.agent import Agent
+
+# 統計抽出関数の型: Agent を受け取り、ログに追加する文字列を返す
+StatsExtractor = Callable[[Agent], str | None]
 
 
 class Env(Protocol):
@@ -71,6 +74,7 @@ class AgentTrainer:
         log_interval: int = 10,
         burn_in_steps: int = 0,
         burn_in_epsilon: float = 0.2,
+        stats_extractor: StatsExtractor | None = None,
     ):
         self.env = env
         self.eval_env = eval_env
@@ -83,6 +87,7 @@ class AgentTrainer:
         self.log_interval = log_interval
         self.burn_in_steps = burn_in_steps
         self.burn_in_epsilon = burn_in_epsilon
+        self.stats_extractor = stats_extractor
 
     def train(self) -> TrainResult:
         """トレーニングを実行"""
@@ -202,45 +207,17 @@ class AgentTrainer:
         if actor_loss is not None and critic_loss is not None:
             loss_str = f"ActorLoss = {actor_loss:.4f}, CriticLoss = {critic_loss:.4f}"
 
-        # 1) V(s) の統計
-        value_mean = getattr(self.agent, "last_value_mean", None)
-        value_std = getattr(self.agent, "last_value_std", None)
-        value_min = getattr(self.agent, "last_value_min", None)
-        value_max = getattr(self.agent, "last_value_max", None)
-        target_mean = getattr(self.agent, "last_target_mean", None)
-        target_std = getattr(self.agent, "last_target_std", None)
-
-        # 2) Advantage の統計（正規化前）
-        adv_mean = getattr(self.agent, "last_adv_mean_raw", None)
-        adv_std = getattr(self.agent, "last_adv_std_raw", None)
-        adv_min = getattr(self.agent, "last_adv_min_raw", None)
-        adv_max = getattr(self.agent, "last_adv_max_raw", None)
-
-        # 3) 方策の std の統計
-        policy_std_mean = getattr(self.agent, "last_policy_std_mean", None)
-        policy_std_min = getattr(self.agent, "last_policy_std_min", None)
-        policy_std_max = getattr(self.agent, "last_policy_std_max", None)
-
-        # 4) States の多様性チェック
-        states_shape = getattr(self.agent, "last_states_shape", None)
-        states_std = getattr(self.agent, "last_states_std_per_dim", None)
-
-        debug_str = ""
-        if value_mean is not None:
-            debug_str += f"\n  → V(s): mean={value_mean:.1f} std={value_std:.1f} [{value_min:.1f}, {value_max:.1f}]"
-            debug_str += f" | Target: mean={target_mean:.1f} std={target_std:.1f}"
-        if adv_mean is not None:
-            debug_str += f"\n  → Adv(raw): mean={adv_mean:.2f} std={adv_std:.2f} [{adv_min:.2f}, {adv_max:.2f}]"
-        if policy_std_mean is not None:
-            debug_str += f"\n  → Policy σ: mean={policy_std_mean:.3f} [{policy_std_min:.3f}, {policy_std_max:.3f}]"
-        if states_shape is not None:
-            std_str = ", ".join([f"{s:.3f}" for s in states_std])
-            debug_str += f"\n  → States: shape={states_shape}, std=[{std_str}]"
+        # 外部から注入された統計抽出関数を使用
+        extra_stats = ""
+        if self.stats_extractor is not None:
+            extracted = self.stats_extractor(self.agent)
+            if extracted:
+                extra_stats = extracted
 
         print(
             f"Episode {episode + 1}: Reward = {total_reward:.2f}, "
             f"Avg({self.log_interval}) = {avg_reward:.2f}, {loss_str}, "
-            f"Epsilon = {epsilon:.3f}{debug_str}"
+            f"Epsilon = {epsilon:.3f}{extra_stats}"
         )
 
     def evaluate(
