@@ -1,4 +1,4 @@
-from typing import Protocol
+from typing import Protocol, Any
 from dataclasses import dataclass
 import numpy as np
 
@@ -6,10 +6,39 @@ from dpl.agent import Agent
 
 
 class Env(Protocol):
-    """環境のプロトコル"""
+    """環境のプロトコル（離散/連続行動空間対応）"""
 
     def reset(self) -> np.ndarray: ...
-    def step(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict]: ...
+    def step(self, action: int | np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict]: ...
+
+
+class GymEnvWrapper:
+    """Gymnasium環境をAgentTrainer用にラップするクラス"""
+
+    def __init__(self, env: Any):
+        """
+        Args:
+            env: Gymnasium環境（gym.make()で作成したもの）
+        """
+        self._env = env
+
+    def reset(self) -> np.ndarray:
+        """環境をリセット（infoを捨ててobsのみ返す）"""
+        obs, _ = self._env.reset()
+        return obs
+
+    def step(self, action: int | np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict]:
+        """環境を1ステップ進める"""
+        return self._env.step(action)
+
+    def close(self):
+        """環境を閉じる"""
+        self._env.close()
+
+    @property
+    def unwrapped(self) -> Any:
+        """元のGymnasium環境を取得"""
+        return self._env
 
 
 @dataclass
@@ -201,12 +230,12 @@ class AgentTrainer:
             total = 0.0
             steps = 0
             while not done:
-                # burn_in_steps中はburn_in_epsilonを使用、その後はε=0
+                # burn_in_steps中は探索あり、その後は探索なし
                 if steps < burn_in_steps:
-                    eps = burn_in_epsilon
+                    explore = True
                 else:
-                    eps = 0.0
-                a = self.agent.act(s, epsilon=eps)
+                    explore = False
+                a = self.agent.act(s, explore=explore)
                 s, r, terminated, truncated, _ = self.eval_env.step(a)
                 done = terminated or truncated
                 total += r
