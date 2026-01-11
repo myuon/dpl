@@ -1336,6 +1336,8 @@ trainer = AgentTrainer(
     num_episodes=1500,
     eval_interval=50,
     eval_n=200,
+    burn_in_steps=5,  # Eval-B: 最初の5ステップでε=0.2で情報収集
+    burn_in_epsilon=0.2,
 )
 
 result = trainer.train()
@@ -1407,8 +1409,39 @@ if hasattr(result, "eval_avg_steps") and result.eval_avg_steps:
     ax5.set_title("Avg Steps to Goal (success only)")
     ax5.grid(True)
 
-# 6. 空きスロット（将来の拡張用、または非表示）
-ax6.axis("off")
+# 6. Eval-B Success Rate（burn_in付き評価）
+if hasattr(result, "eval_b_success_rates") and result.eval_b_success_rates:
+    episodes, success_rates_b = zip(*result.eval_b_success_rates)
+    ax6.plot(
+        episodes,
+        [r * 100 for r in success_rates_b],
+        marker="o",
+        markersize=4,
+        linewidth=1.5,
+        color="purple",
+        label="Eval-B",
+    )
+    # Eval-Aも一緒にプロット（比較用）
+    if hasattr(result, "eval_success_rates") and result.eval_success_rates:
+        eps_a, rates_a = zip(*result.eval_success_rates)
+        ax6.plot(
+            eps_a,
+            [r * 100 for r in rates_a],
+            marker="s",
+            markersize=3,
+            linewidth=1.0,
+            color="green",
+            alpha=0.5,
+            label="Eval-A",
+        )
+    ax6.set_xlabel("Episode")
+    ax6.set_ylabel("Success Rate (%)")
+    ax6.set_title(f"Eval-B (burn_in={trainer.burn_in_steps}, ε={trainer.burn_in_epsilon})")
+    ax6.set_ylim(0, 105)
+    ax6.legend()
+    ax6.grid(True)
+else:
+    ax6.axis("off")
 
 plt.tight_layout()
 plt.show()

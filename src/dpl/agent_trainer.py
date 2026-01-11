@@ -18,9 +18,12 @@ class TrainResult:
 
     episode_rewards: list[float]
     episode_losses: list[float]
+    # Eval-A: ε=0（完全greedy）
     eval_returns: list[tuple[int, float]]
     eval_success_rates: list[tuple[int, float]]  # (episode, success_rate)
     eval_avg_steps: list[tuple[int, float]]  # (episode, avg_steps_to_goal)
+    # Eval-B: 最初burn_in stepでε>0、その後ε=0（情報収集付き）
+    eval_b_success_rates: list[tuple[int, float]]  # (episode, success_rate)
 
 
 class AgentTrainer:
@@ -37,6 +40,8 @@ class AgentTrainer:
         update_every: int = 4,
         render: bool = False,
         log_interval: int = 10,
+        burn_in_steps: int = 0,
+        burn_in_epsilon: float = 0.2,
     ):
         self.env = env
         self.eval_env = eval_env
@@ -47,6 +52,8 @@ class AgentTrainer:
         self.update_every = update_every
         self.render = render
         self.log_interval = log_interval
+        self.burn_in_steps = burn_in_steps
+        self.burn_in_epsilon = burn_in_epsilon
 
     def train(self) -> TrainResult:
         """トレーニングを実行"""
@@ -55,6 +62,7 @@ class AgentTrainer:
         eval_returns: list[tuple[int, float]] = []
         eval_success_rates: list[tuple[int, float]] = []
         eval_avg_steps: list[tuple[int, float]] = []
+        eval_b_success_rates: list[tuple[int, float]] = []
         total_steps = 0
 
         for episode in range(self.num_episodes):
@@ -73,20 +81,33 @@ class AgentTrainer:
 
             # 評価
             if (episode + 1) % self.eval_interval == 0:
+                # Eval-A: ε=0（完全greedy）
                 eval_return, success_rate, avg_steps, avg_success, avg_fail = self.evaluate(n=self.eval_n)
                 eval_returns.append((episode + 1, eval_return))
                 eval_success_rates.append((episode + 1, success_rate))
                 eval_avg_steps.append((episode + 1, avg_steps))
                 print(
-                    f"  → Eval (n={self.eval_n}): Return={eval_return:.2f}, "
+                    f"  → Eval-A (ε=0, n={self.eval_n}): Return={eval_return:.2f}, "
                     f"Success={success_rate*100:.0f}% ({int(success_rate*self.eval_n)}/{self.eval_n}), "
-                    f"AvgSteps={avg_steps:.1f}, "
-                    f"ReturnSuccess={avg_success:.2f}, ReturnFail={avg_fail:.2f}"
+                    f"AvgSteps={avg_steps:.1f}"
                 )
+
+                # Eval-B: 最初burn_in stepでε>0、その後ε=0（情報収集付き）
+                if self.burn_in_steps > 0:
+                    _, success_rate_b, _, _, _ = self.evaluate(
+                        n=self.eval_n,
+                        burn_in_steps=self.burn_in_steps,
+                        burn_in_epsilon=self.burn_in_epsilon,
+                    )
+                    eval_b_success_rates.append((episode + 1, success_rate_b))
+                    print(
+                        f"  → Eval-B (burn_in={self.burn_in_steps}, ε={self.burn_in_epsilon}, n={self.eval_n}): "
+                        f"Success={success_rate_b*100:.0f}% ({int(success_rate_b*self.eval_n)}/{self.eval_n})"
+                    )
 
         return TrainResult(
             episode_rewards, episode_losses, eval_returns,
-            eval_success_rates, eval_avg_steps
+            eval_success_rates, eval_avg_steps, eval_b_success_rates
         )
 
     def _run_episode(self) -> tuple[float, list[float], int]:
@@ -145,8 +166,18 @@ class AgentTrainer:
             f"Epsilon = {epsilon:.3f}"
         )
 
-    def evaluate(self, n: int = 20) -> tuple[float, float, float, float, float]:
-        """評価を実行（ε=0で複数エピソード）
+    def evaluate(
+        self,
+        n: int = 20,
+        burn_in_steps: int = 0,
+        burn_in_epsilon: float = 0.0,
+    ) -> tuple[float, float, float, float, float]:
+        """評価を実行
+
+        Args:
+            n: 評価エピソード数
+            burn_in_steps: 最初の数ステップで使うepsilon適用ステップ数（情報収集用）
+            burn_in_epsilon: burn_in_steps中に使うepsilon値
 
         Returns:
             (avg_return, success_rate, avg_steps_to_goal, avg_return_success, avg_return_fail)
@@ -170,7 +201,12 @@ class AgentTrainer:
             total = 0.0
             steps = 0
             while not done:
-                a = self.agent.act(s, epsilon=0.0)
+                # burn_in_steps中はburn_in_epsilonを使用、その後はε=0
+                if steps < burn_in_steps:
+                    eps = burn_in_epsilon
+                else:
+                    eps = 0.0
+                a = self.agent.act(s, epsilon=eps)
                 s, r, terminated, truncated, _ = self.eval_env.step(a)
                 done = terminated or truncated
                 total += r
