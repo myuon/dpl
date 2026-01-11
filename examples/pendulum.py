@@ -138,21 +138,24 @@ class ReinforceAgent(BaseAgent):
         action_dim: int = 1,
         hidden_dim: int = 64,
         action_scale: float = 2.0,
-        lr: float = 1e-3,
+        actor_lr: float = 3e-4,
+        critic_lr: float = 1e-3,
         gamma: float = 0.99,
+        critic_update_steps: int = 10,
     ):
         self.gamma = gamma
         self.action_scale = action_scale
+        self.critic_update_steps = critic_update_steps
 
         # Actor（方策ネットワーク）
         self.policy = GaussianPolicy(
             state_dim, action_dim, hidden_dim, action_scale
         )
-        self.actor_optimizer = Adam(lr=lr).setup(self.policy)
+        self.actor_optimizer = Adam(lr=actor_lr).setup(self.policy)
 
         # Critic（価値関数ネットワーク）
         self.critic = ValueNetwork(state_dim, hidden_dim)
-        self.critic_optimizer = Adam(lr=lr).setup(self.critic)
+        self.critic_optimizer = Adam(lr=critic_lr).setup(self.critic)
 
         # エピソード内のトラジェクトリ
         self.episode_states: list[np.ndarray] = []
@@ -161,6 +164,10 @@ class ReinforceAgent(BaseAgent):
 
         # ダミーバッファ（インターフェース互換用）
         self.buffer = ReplayBuffer(capacity=1, continuous_action=True)
+
+        # 最新のloss（モニタリング用）
+        self.last_actor_loss: float | None = None
+        self.last_critic_loss: float | None = None
 
     def get_action(self, state: np.ndarray) -> np.ndarray:
         return self.act(state, explore=True)
@@ -252,6 +259,19 @@ class ReinforceAgent(BaseAgent):
             returns.insert(0, G)
 
         returns = np.array(returns, dtype=np.float32)
+
+        # G_t のモニタリング（デバッグ用）
+        self.last_return_min = float(returns.min())
+        self.last_return_max = float(returns.max())
+        self.last_return_mean = float(returns.mean())
+
+        # デバッグ: returns の妥当性チェック
+        self.last_num_rewards = len(self.episode_rewards)
+        self.last_sum_rewards = float(sum(self.episode_rewards))
+        self.last_return_first = float(returns[0])  # G_0 ≈ sum(rewards) if γ≈1
+        self.last_return_last = float(returns[-1])  # G_T ≈ r_T（終端一歩分）
+        self.last_reward_last = float(self.episode_rewards[-1])  # r_T
+
         returns_v = Variable(returns.reshape(-1, 1))
 
         # states, actions をテンソルに変換
@@ -260,6 +280,12 @@ class ReinforceAgent(BaseAgent):
 
         # Critic: V(s) を計算
         values = self.critic.predict(states)  # shape: (T, 1)
+
+        # V(s) のモニタリング（デバッグ用）
+        values_np = values.data_required.reshape(-1)
+        self.last_value_min = float(values_np.min())
+        self.last_value_max = float(values_np.max())
+        self.last_value_mean = float(values_np.mean())
 
         # Advantage: A_t = G_t - V(s_t)
         # .data_required で計算グラフから切り離す（Actor更新時にCriticの勾配が流れないように）
@@ -279,15 +305,21 @@ class ReinforceAgent(BaseAgent):
         actor_loss.backward()
         self.actor_optimizer.update()
 
-        # --- Critic更新 ---
+        # --- Critic更新（複数回） ---
         # 損失: MSE(V(s), G_t)
-        # 新しくforwardしてグラフを作り直す
-        values = self.critic.predict(states)
-        critic_loss = ((values - returns_v) ** 2).sum() / len(returns)
+        critic_loss_value = 0.0
+        for _ in range(self.critic_update_steps):
+            values = self.critic.predict(states)
+            critic_loss = ((values - returns_v) ** 2).sum() / len(returns)
+            critic_loss_value = float(critic_loss.data_required)
 
-        self.critic.cleargrads()
-        critic_loss.backward()
-        self.critic_optimizer.update()
+            self.critic.cleargrads()
+            critic_loss.backward()
+            self.critic_optimizer.update()
+
+        # lossを保存（モニタリング用）
+        self.last_actor_loss = float(actor_loss.data_required)
+        self.last_critic_loss = critic_loss_value
 
         # トラジェクトリをクリア
         self.episode_states = []
@@ -323,23 +355,26 @@ class A2CAgent(BaseAgent):
         action_dim: int = 1,
         hidden_dim: int = 64,
         action_scale: float = 2.0,
-        lr: float = 1e-3,
+        actor_lr: float = 3e-4,
+        critic_lr: float = 1e-3,
         gamma: float = 0.99,
         n_steps: int = 5,
+        critic_update_steps: int = 5,
     ):
         self.gamma = gamma
         self.action_scale = action_scale
         self.n_steps = n_steps
+        self.critic_update_steps = critic_update_steps
 
         # Actor（方策ネットワーク）
         self.policy = GaussianPolicy(
             state_dim, action_dim, hidden_dim, action_scale
         )
-        self.actor_optimizer = Adam(lr=lr).setup(self.policy)
+        self.actor_optimizer = Adam(lr=actor_lr).setup(self.policy)
 
         # Critic（価値関数ネットワーク）
         self.critic = ValueNetwork(state_dim, hidden_dim)
-        self.critic_optimizer = Adam(lr=lr).setup(self.critic)
+        self.critic_optimizer = Adam(lr=critic_lr).setup(self.critic)
 
         # N-step用バッファ
         self.states: list[np.ndarray] = []
@@ -350,6 +385,10 @@ class A2CAgent(BaseAgent):
 
         # ダミーバッファ（インターフェース互換用）
         self.buffer = ReplayBuffer(capacity=1, continuous_action=True)
+
+        # 最新のloss（モニタリング用）
+        self.last_actor_loss: float | None = None
+        self.last_critic_loss: float | None = None
 
     def get_action(self, state: np.ndarray) -> np.ndarray:
         return self.act(state, explore=True)
@@ -423,13 +462,20 @@ class A2CAgent(BaseAgent):
         actor_loss.backward()
         self.actor_optimizer.update()
 
-        # --- Critic更新 ---
-        values = self.critic.predict(states)
-        critic_loss = ((values - td_targets_v) ** 2).sum() / len(self.states)
+        # --- Critic更新（複数回） ---
+        critic_loss_value = 0.0
+        for _ in range(self.critic_update_steps):
+            values = self.critic.predict(states)
+            critic_loss = ((values - td_targets_v) ** 2).sum() / len(self.states)
+            critic_loss_value = float(critic_loss.data_required)
 
-        self.critic.cleargrads()
-        critic_loss.backward()
-        self.critic_optimizer.update()
+            self.critic.cleargrads()
+            critic_loss.backward()
+            self.critic_optimizer.update()
+
+        # lossを保存（モニタリング用）
+        self.last_actor_loss = float(actor_loss.data_required)
+        self.last_critic_loss = critic_loss_value
 
         # バッファをクリア
         self.states = []
@@ -438,7 +484,7 @@ class A2CAgent(BaseAgent):
         self.next_states = []
         self.dones = []
 
-        return {"actor_loss": float(actor_loss.data_required), "critic_loss": float(critic_loss.data_required)}
+        return {"actor_loss": self.last_actor_loss, "critic_loss": self.last_critic_loss}
 
     def _compute_log_prob(
         self, states: Variable, actions: np.ndarray
@@ -491,8 +537,10 @@ agent = ReinforceAgent(
     action_dim=1,
     hidden_dim=64,
     action_scale=2.0,
-    lr=3e-4,
+    actor_lr=3e-4,
+    critic_lr=1e-3,  # criticを強く
     gamma=0.99,
+    critic_update_steps=10,  # criticを複数回更新
 )
 
 # %%
@@ -609,9 +657,11 @@ a2c_agent = A2CAgent(
     action_dim=1,
     hidden_dim=64,
     action_scale=2.0,
-    lr=3e-4,
+    actor_lr=3e-4,
+    critic_lr=1e-3,  # criticを強く
     gamma=0.99,
     n_steps=5,
+    critic_update_steps=5,  # criticを複数回更新
 )
 
 # %%

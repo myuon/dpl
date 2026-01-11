@@ -193,10 +193,43 @@ class AgentTrainer:
         """進捗をログ出力"""
         avg_reward = np.mean(episode_rewards[-self.log_interval :])
         epsilon = getattr(self.agent, "epsilon", 0.0)
+
+        # Actor/Critic lossがあれば表示
+        actor_loss = getattr(self.agent, "last_actor_loss", None)
+        critic_loss = getattr(self.agent, "last_critic_loss", None)
+
+        loss_str = f"Loss = {avg_loss:.4f}"
+        if actor_loss is not None and critic_loss is not None:
+            loss_str = f"ActorLoss = {actor_loss:.4f}, CriticLoss = {critic_loss:.4f}"
+
+        # G_t（return）と V(s) のモニタリング
+        return_min = getattr(self.agent, "last_return_min", None)
+        return_max = getattr(self.agent, "last_return_max", None)
+        return_mean = getattr(self.agent, "last_return_mean", None)
+        value_min = getattr(self.agent, "last_value_min", None)
+        value_max = getattr(self.agent, "last_value_max", None)
+        value_mean = getattr(self.agent, "last_value_mean", None)
+
+        # デバッグ: returns の妥当性チェック
+        num_rewards = getattr(self.agent, "last_num_rewards", None)
+        sum_rewards = getattr(self.agent, "last_sum_rewards", None)
+        return_first = getattr(self.agent, "last_return_first", None)
+        return_last = getattr(self.agent, "last_return_last", None)
+        reward_last = getattr(self.agent, "last_reward_last", None)
+
+        debug_str = ""
+        if return_min is not None:
+            debug_str = f"\n  → G_t=[{return_min:.0f}, {return_max:.0f}] mean={return_mean:.0f}"
+            if value_min is not None:
+                debug_str += f", V(s)=[{value_min:.0f}, {value_max:.0f}] mean={value_mean:.0f}"
+
+        if num_rewards is not None:
+            debug_str += f"\n  → len(rewards)={num_rewards}, sum(rewards)={sum_rewards:.0f}, G_0={return_first:.0f}, G_T={return_last:.1f}, r_T={reward_last:.2f}"
+
         print(
             f"Episode {episode + 1}: Reward = {total_reward:.2f}, "
-            f"Avg({self.log_interval}) = {avg_reward:.2f}, Loss = {avg_loss:.4f}, "
-            f"Epsilon = {epsilon:.3f}"
+            f"Avg({self.log_interval}) = {avg_reward:.2f}, {loss_str}, "
+            f"Epsilon = {epsilon:.3f}{debug_str}"
         )
 
     def evaluate(
