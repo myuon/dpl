@@ -13,3 +13,11 @@ from models.attention_seq2seq import (
     AttentionSeq2Seq,
     AttentionSeq2SeqWithLoss,
 )
+from models.sac import (
+    GaussianPolicy,
+    QNetwork,
+    SACAgent,
+    soft_update,
+    hard_update,
+    sac_stats_extractor,
+)
