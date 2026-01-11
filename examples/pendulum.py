@@ -1,7 +1,7 @@
 # %% [markdown]
 # # Pendulum-v1 強化学習
 #
-# DDPG（Deep Deterministic Policy Gradient）による連続行動空間の学習
+# TD3（Twin Delayed Deep Deterministic Policy Gradient）による連続行動空間の学習
 # dpl（自作NNライブラリ）を使用
 
 # %%
@@ -33,22 +33,22 @@ from dpl.agent_trainer import AgentTrainer, GymEnvWrapper, EvalResult
 # | truncated | 200ステップでTrue |
 
 # %% [markdown]
-# ## DDPG（Deep Deterministic Policy Gradient）
+# ## TD3（Twin Delayed Deep Deterministic Policy Gradient）
 #
-# オフポリシーのActor-Critic。SACの前段階として重要。
+# DDPGの3つの問題を解決した改良版。SACの前段階として重要。
 #
-# ## DDPGの特徴
-# - **Replay Buffer**: 経験を貯めてミニバッチ学習（サンプル効率向上）
-# - **Target Network**: θ' ← τθ + (1-τ)θ'（学習の安定化）
-# - **Deterministic Policy**: π(s) = μ(s)（確定的方策）
-# - **Q学習**: Q(s,a) を学習（状態と行動の両方を入力）
+# ## TD3の特徴（DDPGからの改良点）
+# 1. **Twin Critics（Double Q）**: Q1, Q2 の2つを学習し、ターゲットは min(Q1, Q2) を使用
+#    → Q値の過大評価を防ぐ
+# 2. **Delayed Policy Updates**: Criticを複数回更新するごとにActorを1回更新
+#    → Criticが十分学習してからActorを更新
+# 3. **Target Policy Smoothing**: ターゲット方策の行動にノイズを加える
+#    → Q関数の過学習を防ぐ
 #
 # ## 更新式
-# - Critic: L = E[(Q(s,a) - (r + γQ'(s', μ'(s'))))²]
-# - Actor: ∇_θ E[Q(s, μ_θ(s))] を最大化
-#
-# ## 探索
-# - 探索ノイズ: a = μ(s) + ε（ガウスノイズ）
+# - Target: y = r + γ * min(Q1'(s', μ'(s') + ε), Q2'(s', μ'(s') + ε))
+# - Critic: L = E[(Q1(s,a) - y)²] + E[(Q2(s,a) - y)²]
+# - Actor: ∇_θ E[Q1(s, μ_θ(s))] を最大化（policy_delay回に1回）
 
 
 # %%
@@ -56,7 +56,7 @@ from dpl.layers import Layer, Sequential
 
 
 class DeterministicPolicy(Layer):
-    """決定的方策ネットワーク（DDPG Actor）
+    """決定的方策ネットワーク（TD3 Actor）
 
     状態 s → action を直接出力（tanh でスケーリング）
     """
@@ -87,7 +87,7 @@ class DeterministicPolicy(Layer):
 
 # %%
 class QNetwork(Layer):
-    """Q関数ネットワーク（DDPG Critic）
+    """Q関数ネットワーク（TD3 Critic）
 
     (状態 s, 行動 a) → Q(s, a) を出力
     """
@@ -124,13 +124,13 @@ def hard_update(target: Layer, source: Layer):
 
 
 # %%
-class DDPGAgent(BaseAgent):
-    """DDPG（Deep Deterministic Policy Gradient）エージェント
+class TD3Agent(BaseAgent):
+    """TD3（Twin Delayed Deep Deterministic Policy Gradient）エージェント
 
-    オフポリシーのActor-Critic。
-    - Replay Buffer でサンプル効率向上
-    - Target Network で学習安定化
-    - 探索ノイズで探索
+    DDPGの3つの問題を解決:
+    1. Twin Critics: Q1, Q2 → min(Q1, Q2) でターゲット計算（過大評価防止）
+    2. Delayed Policy Updates: Criticを複数回更新後にActorを1回更新
+    3. Target Policy Smoothing: ターゲット行動にノイズを加える
     """
 
     def __init__(
@@ -146,15 +146,24 @@ class DDPGAgent(BaseAgent):
         buffer_size: int = 100000,
         batch_size: int = 256,
         exploration_noise: float = 0.1,
+        # TD3固有のハイパーパラメータ
+        policy_delay: int = 2,  # Actorの更新頻度（Critic更新N回に1回）
+        target_noise: float = 0.2,  # ターゲット行動へのノイズ
+        noise_clip: float = 0.5,  # ターゲットノイズのクリップ範囲
         warmup_steps: int = 1000,
     ):
         self.gamma = gamma
         self.tau = tau
         self.action_scale = action_scale
+        self.action_dim = action_dim
         self.batch_size = batch_size
         self.exploration_noise = exploration_noise
+        self.policy_delay = policy_delay
+        self.target_noise = target_noise
+        self.noise_clip = noise_clip
         self.warmup_steps = warmup_steps
         self.total_steps = 0
+        self.update_count = 0  # Critic更新回数（policy_delay判定用）
 
         # Actor（決定的方策）
         self.actor = DeterministicPolicy(
@@ -170,21 +179,28 @@ class DDPGAgent(BaseAgent):
         hard_update(self.actor_target, self.actor)
         self.actor_optimizer = Adam(lr=actor_lr).setup(self.actor)
 
-        # Critic（Q関数）
-        self.critic = QNetwork(state_dim, action_dim, hidden_dim)
-        self.critic_target = QNetwork(state_dim, action_dim, hidden_dim)
+        # Twin Critics（Q1, Q2）
+        self.critic1 = QNetwork(state_dim, action_dim, hidden_dim)
+        self.critic1_target = QNetwork(state_dim, action_dim, hidden_dim)
+        self.critic2 = QNetwork(state_dim, action_dim, hidden_dim)
+        self.critic2_target = QNetwork(state_dim, action_dim, hidden_dim)
         # ダミーのforward passで重みを初期化
-        _ = self.critic.predict(dummy_state, dummy_action)
-        _ = self.critic_target.predict(dummy_state, dummy_action)
-        hard_update(self.critic_target, self.critic)
-        self.critic_optimizer = Adam(lr=critic_lr).setup(self.critic)
+        _ = self.critic1.predict(dummy_state, dummy_action)
+        _ = self.critic1_target.predict(dummy_state, dummy_action)
+        _ = self.critic2.predict(dummy_state, dummy_action)
+        _ = self.critic2_target.predict(dummy_state, dummy_action)
+        hard_update(self.critic1_target, self.critic1)
+        hard_update(self.critic2_target, self.critic2)
+        self.critic1_optimizer = Adam(lr=critic_lr).setup(self.critic1)
+        self.critic2_optimizer = Adam(lr=critic_lr).setup(self.critic2)
 
         # Replay Buffer
         self.buffer = ReplayBuffer(capacity=buffer_size, continuous_action=True)
 
         # 最新のloss（モニタリング用）
         self.last_actor_loss: float | None = None
-        self.last_critic_loss: float | None = None
+        self.last_critic1_loss: float | None = None
+        self.last_critic2_loss: float | None = None
 
     def get_action(self, state: np.ndarray) -> np.ndarray:
         return self.act(state, explore=True)
@@ -239,46 +255,81 @@ class DDPGAgent(BaseAgent):
         next_states_v = Variable(next_states)
         dones_v = dones.reshape(-1, 1)
 
-        # --- Critic更新 ---
-        # TDターゲット: y = r + γ * Q'(s', μ'(s'))
-        next_actions = self.actor_target.predict(next_states_v)
-        target_q = self.critic_target.predict(next_states_v, next_actions).data_required
+        # --- Target Policy Smoothing ---
+        # ターゲット行動にノイズを加える（Q関数の過学習防止）
+        next_actions = self.actor_target.predict(next_states_v).data_required
+        noise = np.clip(
+            np.random.randn(*next_actions.shape) * self.target_noise,
+            -self.noise_clip,
+            self.noise_clip,
+        )
+        next_actions_noisy = np.clip(
+            next_actions + noise, -self.action_scale, self.action_scale
+        )
+        next_actions_v = Variable(next_actions_noisy.astype(np.float32))
+
+        # --- Twin Critics のターゲット計算（Double Q） ---
+        # min(Q1', Q2') で過大評価を防ぐ
+        target_q1 = self.critic1_target.predict(
+            next_states_v, next_actions_v
+        ).data_required
+        target_q2 = self.critic2_target.predict(
+            next_states_v, next_actions_v
+        ).data_required
+        target_q = np.minimum(target_q1, target_q2)  # Clipped Double Q
         td_target = rewards_v + self.gamma * target_q * (1 - dones_v)
         td_target_v = Variable(td_target.astype(np.float32))
 
-        # 現在のQ値
-        current_q = self.critic.predict(states_v, actions_v)
+        # --- Critic1 更新 ---
+        current_q1 = self.critic1.predict(states_v, actions_v)
+        critic1_loss = ((current_q1 - td_target_v) ** 2).sum() / self.batch_size
 
-        # Critic損失: MSE
-        critic_loss = ((current_q - td_target_v) ** 2).sum() / self.batch_size
+        self.critic1.cleargrads()
+        critic1_loss.backward()
+        self.critic1_optimizer.update()
 
-        self.critic.cleargrads()
-        critic_loss.backward()
-        self.critic_optimizer.update()
+        # --- Critic2 更新 ---
+        current_q2 = self.critic2.predict(states_v, actions_v)
+        critic2_loss = ((current_q2 - td_target_v) ** 2).sum() / self.batch_size
 
-        # --- Actor更新 ---
-        # Actor損失: -E[Q(s, μ(s))]（Q値を最大化）
-        predicted_actions = self.actor.predict(states_v)
-        actor_loss = (
-            -self.critic.predict(states_v, predicted_actions).sum() / self.batch_size
-        )
+        self.critic2.cleargrads()
+        critic2_loss.backward()
+        self.critic2_optimizer.update()
 
-        self.actor.cleargrads()
-        actor_loss.backward()
-        self.actor_optimizer.update()
+        self.last_critic1_loss = float(critic1_loss.data_required)
+        self.last_critic2_loss = float(critic2_loss.data_required)
 
-        # --- ターゲットネットワークのソフト更新 ---
-        soft_update(self.actor_target, self.actor, self.tau)
-        soft_update(self.critic_target, self.critic, self.tau)
+        self.update_count += 1
 
-        # lossを保存
-        self.last_actor_loss = float(actor_loss.data_required)
-        self.last_critic_loss = float(critic_loss.data_required)
+        # --- Delayed Policy Updates ---
+        # policy_delay回に1回だけActorとターゲットを更新
+        if self.update_count % self.policy_delay == 0:
+            # Actor更新: Q1のみ使用（論文通り）
+            predicted_actions = self.actor.predict(states_v)
+            actor_loss = (
+                -self.critic1.predict(states_v, predicted_actions).sum()
+                / self.batch_size
+            )
 
-        return {
-            "actor_loss": self.last_actor_loss,
-            "critic_loss": self.last_critic_loss,
+            self.actor.cleargrads()
+            actor_loss.backward()
+            self.actor_optimizer.update()
+
+            self.last_actor_loss = float(actor_loss.data_required)
+
+            # ターゲットネットワークのソフト更新
+            soft_update(self.actor_target, self.actor, self.tau)
+            soft_update(self.critic1_target, self.critic1, self.tau)
+            soft_update(self.critic2_target, self.critic2, self.tau)
+
+        # Noneを含まない辞書を返す
+        result = {
+            "critic1_loss": self.last_critic1_loss,
+            "critic2_loss": self.last_critic2_loss,
         }
+        if self.last_actor_loss is not None:
+            result["actor_loss"] = self.last_actor_loss
+        return result
 
     def start_episode(self):
         pass
@@ -297,9 +348,15 @@ def pendulum_stats_extractor(agent) -> str | None:
     parts = []
 
     actor_loss = getattr(agent, "last_actor_loss", None)
-    critic_loss = getattr(agent, "last_critic_loss", None)
-    if actor_loss is not None and critic_loss is not None:
-        parts.append(f"ActorLoss={actor_loss:.4f}, CriticLoss={critic_loss:.4f}")
+    critic1_loss = getattr(agent, "last_critic1_loss", None)
+    critic2_loss = getattr(agent, "last_critic2_loss", None)
+
+    if critic1_loss is not None and critic2_loss is not None:
+        critic_loss = (critic1_loss + critic2_loss) / 2
+        if actor_loss is not None:
+            parts.append(f"ActorLoss={actor_loss:.4f}, CriticLoss={critic_loss:.4f}")
+        else:
+            parts.append(f"CriticLoss={critic_loss:.4f}")
 
     if not parts:
         return None
@@ -313,14 +370,14 @@ def pendulum_eval_stats_extractor(result: EvalResult) -> str:
 
 
 # %% [markdown]
-# ## 実行：DDPG
+# ## 実行：TD3
 
 # %%
-print("=== Pendulum-v1 DDPG (dpl) ===")
+print("=== Pendulum-v1 TD3 (dpl) ===")
 print()
 
-# DDPG エージェント
-agent = DDPGAgent(
+# TD3 エージェント
+agent = TD3Agent(
     state_dim=3,
     action_dim=1,
     hidden_dim=256,
@@ -332,6 +389,10 @@ agent = DDPGAgent(
     buffer_size=100000,
     batch_size=256,
     exploration_noise=0.1,
+    # TD3固有
+    policy_delay=2,
+    target_noise=0.2,
+    noise_clip=0.5,
     warmup_steps=1000,
 )
 
@@ -380,7 +441,7 @@ if len(result.episode_rewards) >= window:
     )
 axes[0].set_xlabel("Episode")
 axes[0].set_ylabel("Return")
-axes[0].set_title("DDPG Episode Returns")
+axes[0].set_title("TD3 Episode Returns")
 axes[0].legend()
 axes[0].grid(True)
 
@@ -390,7 +451,7 @@ if result.eval_returns:
     axes[1].plot(episodes, means, marker="o")
     axes[1].set_xlabel("Episode")
     axes[1].set_ylabel("Eval Return")
-    axes[1].set_title("DDPG Evaluation Returns (explore=False)")
+    axes[1].set_title("TD3 Evaluation Returns (explore=False)")
     axes[1].grid(True)
 
 plt.tight_layout()
