@@ -1,8 +1,8 @@
 # %% [markdown]
-# # Pendulum-v1 強化学習の土台
+# # Pendulum-v1 強化学習
 #
-# env reset → rollout → buffer/store → update → eval の骨組み
-# 手法は後から差し替え可能な設計
+# REINFORCE（モンテカルロ方策勾配）による連続行動空間の学習
+# dpl（自作NNライブラリ）を使用
 
 # %%
 import gymnasium as gym
@@ -10,6 +10,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import animation
 from IPython.display import HTML
+
+from dpl import Variable
+import dpl.functions as F
+import dpl.layers as L
+from dpl.optimizers import Adam
 
 from dpl.agent import BaseAgent, ReplayBuffer
 from dpl.agent_trainer import AgentTrainer, GymEnvWrapper
@@ -28,145 +33,127 @@ from dpl.agent_trainer import AgentTrainer, GymEnvWrapper
 # | truncated | 200ステップでTrue |
 
 # %% [markdown]
-# ## Random Agent（動作確認用）
+# ## REINFORCE（モンテカルロ方策勾配）
+#
+# 最小構成の方策勾配法。価値関数なし。
+#
+# - 方策: π(a|s) = N(μ(s), σ(s))
+# - 損失: -E[log π(a|s) * G_t]
+# - G_t: モンテカルロリターン（エピソード終了まで待つ）
+#
+# 核となる概念:
+# - 確率方策（NNで平均と分散を出力）
+# - log probability（学習信号の入口）
+# - tanhスケーリング時のlog_prob補正
 
 
 # %%
-class RandomAgent(BaseAgent):
-    """ランダム行動エージェント（骨組み確認用）"""
+from dpl.layers import Layer, Sequential
 
-    def __init__(self, action_low: float = -2.0, action_high: float = 2.0):
-        self.action_low = action_low
-        self.action_high = action_high
-        self.buffer = ReplayBuffer(capacity=100000, continuous_action=True)
 
-    def get_action(self, state: np.ndarray) -> np.ndarray:
-        return self.act(state, explore=True)
+class GaussianPolicy(Layer):
+    """ガウス方策ネットワーク
 
-    def act(self, state: np.ndarray, explore: bool = True) -> np.ndarray:
-        return np.random.uniform(self.action_low, self.action_high, size=(1,)).astype(
-            np.float32
+    状態 s → (μ, σ) を出力
+    Layerを継承して params()/cleargrads() を利用
+    """
+
+    def __init__(
+        self,
+        state_dim: int,
+        action_dim: int,
+        hidden_dim: int = 64,
+        action_scale: float = 2.0,
+        log_std_min: float = -20.0,
+        log_std_max: float = 2.0,
+    ):
+        super().__init__()
+        self.action_scale = action_scale
+        self.log_std_min = log_std_min
+        self.log_std_max = log_std_max
+
+        # 共有層
+        self.shared = Sequential(
+            L.Linear(hidden_dim, in_size=state_dim),
+            F.relu,
+            L.Linear(hidden_dim),
+            F.relu,
         )
 
-    def store(
-        self,
-        state: np.ndarray,
-        action: np.ndarray,
-        reward: float,
-        next_state: np.ndarray,
-        done: bool,
-        *,
-        terminated=None,
-    ):
-        self.buffer.push(state, action, reward, next_state, done)
+        # μ と log_σ を別々に出力
+        self.mean_head = L.Linear(action_dim)
+        self.log_std_head = L.Linear(action_dim)
 
-    def update(self) -> dict | None:
-        return None  # 学習なし
+    def predict(self, state: Variable) -> tuple[Variable, Variable]:
+        """状態から平均と標準偏差を出力"""
+        h = self.shared.apply(state)
 
+        mean = self.mean_head.apply(h)
+        log_std = self.log_std_head.apply(h)
 
-# %% [markdown]
-# ## ガウスノイズ付き定数トルク（ベースライン）
-#
-# ランダムよりマシな制御のベースライン。
-# 行動のスケーリング（クリッピング）の確認用。
+        # log_std をクランプ
+        log_std_data = np.clip(
+            log_std.data_required, self.log_std_min, self.log_std_max
+        )
+        log_std = Variable(log_std_data)
+        std = F.exp(log_std)
+
+        return mean, std
 
 
 # %%
-class NoisyConstantAgent(BaseAgent):
-    """ガウスノイズ付き定数トルクエージェント
+class ReinforceAgent(BaseAgent):
+    """REINFORCE エージェント
 
-    base_torque にガウスノイズを加えた行動を出力。
-    tanh でスケーリング: action = action_scale * tanh(raw)
+    モンテカルロ方策勾配。エピソード終了後にまとめて更新。
+    dpl（自作NNライブラリ）を使用。
     """
 
     def __init__(
         self,
-        base_torque: float = 0.0,
-        noise_sigma: float = 1.0,
+        state_dim: int = 3,
+        action_dim: int = 1,
+        hidden_dim: int = 64,
         action_scale: float = 2.0,
+        lr: float = 1e-3,
+        gamma: float = 0.99,
+        normalize_returns: bool = True,
     ):
-        self.base_torque = base_torque
-        self.noise_sigma = noise_sigma
+        self.gamma = gamma
+        self.normalize_returns = normalize_returns
         self.action_scale = action_scale
-        self.buffer = ReplayBuffer(capacity=100000, continuous_action=True)
+
+        # 方策ネットワーク
+        self.policy = GaussianPolicy(
+            state_dim, action_dim, hidden_dim, action_scale
+        )
+        self.optimizer = Adam(lr=lr).setup(self.policy)
+
+        # エピソード内のトラジェクトリ
+        self.episode_states: list[np.ndarray] = []
+        self.episode_actions: list[np.ndarray] = []
+        self.episode_rewards: list[float] = []
+
+        # ダミーバッファ（インターフェース互換用）
+        self.buffer = ReplayBuffer(capacity=1, continuous_action=True)
 
     def get_action(self, state: np.ndarray) -> np.ndarray:
         return self.act(state, explore=True)
 
     def act(self, state: np.ndarray, explore: bool = True) -> np.ndarray:
-        # obs = [cos(θ), sin(θ), θ_dot]
-        # θ=0 が真上（目標位置）
-        theta = np.arctan2(state[1], state[0])
-
-        # raw は unbounded (-inf, inf)
-        # θ > 0 なら負のトルク、θ < 0 なら正のトルク（P制御的）
-        raw = -theta
+        state_v = Variable(state.reshape(1, -1).astype(np.float32))
+        mean, std = self.policy.predict(state_v)
 
         if explore:
-            raw = raw + np.random.normal(0, self.noise_sigma)
-
-        # tanh でスケーリング
-        a = np.tanh(raw)  # [-1, 1]
-        action = self.action_scale * a  # [-action_scale, action_scale]
-
-        return np.array([action], dtype=np.float32)
-
-    def store(
-        self,
-        state: np.ndarray,
-        action: np.ndarray,
-        reward: float,
-        next_state: np.ndarray,
-        done: bool,
-        *,
-        terminated=None,
-    ):
-        self.buffer.push(state, action, reward, next_state, done)
-
-    def update(self) -> dict | None:
-        return None  # 学習なし
-
-
-# %% [markdown]
-# ## ガウスサンプリング（方策ネット出力のシミュレーション）
-#
-# 方策ネットワークの出力を模擬：
-# raw ~ N(mu, sigma), action = action_scale * tanh(raw)
-
-
-# %%
-class GaussianSamplingAgent(BaseAgent):
-    """ガウス分布からサンプルして tanh スケーリング
-
-    方策ネットワークの出力を模擬するテスト用。
-    raw ~ N(mu, sigma)
-    action = action_scale * tanh(raw)
-    """
-
-    def __init__(
-        self,
-        mu: float = 0.0,
-        sigma: float = 1.0,
-        action_scale: float = 2.0,
-    ):
-        self.mu = mu
-        self.sigma = sigma
-        self.action_scale = action_scale
-        self.buffer = ReplayBuffer(capacity=100000, continuous_action=True)
-
-    def get_action(self, state: np.ndarray) -> np.ndarray:
-        return self.act(state, explore=True)
-
-    def act(self, state: np.ndarray, explore: bool = True) -> np.ndarray:
-        if explore:
-            raw = np.random.normal(self.mu, self.sigma)
+            # サンプリング
+            eps = np.random.randn(*mean.shape).astype(np.float32)
+            raw_action = mean.data_required + std.data_required * eps
         else:
-            raw = self.mu
+            raw_action = mean.data_required
 
-        # tanh でスケーリング
-        action = self.action_scale * np.tanh(raw)
-
-        return np.array([action], dtype=np.float32)
+        # tanh スケーリング
+        action = self.action_scale * np.tanh(raw_action)
+        return action.flatten().astype(np.float32)
 
     def store(
         self,
@@ -178,22 +165,112 @@ class GaussianSamplingAgent(BaseAgent):
         *,
         terminated=None,
     ):
-        self.buffer.push(state, action, reward, next_state, done)
+        # state と action を保存（log_prob は後で計算）
+        self.episode_states.append(state)
+        self.episode_actions.append(action)
+        self.episode_rewards.append(reward)
 
     def update(self) -> dict | None:
-        return None  # 学習なし
+        """エピソード終了時に呼ばれる想定だが、
+        AgentTrainer はステップごとに呼ぶので、
+        end_episode で実際の更新を行う"""
+        return None
+
+    def start_episode(self):
+        """エピソード開始時にトラジェクトリをクリア"""
+        self.episode_states = []
+        self.episode_actions = []
+        self.episode_rewards = []
+
+    def _compute_log_prob(
+        self, states: Variable, actions: np.ndarray
+    ) -> Variable:
+        """行動に対する log_prob を計算（tanh 補正込み）"""
+        mean, std = self.policy.predict(states)
+
+        # action から raw_action を逆算
+        # action = action_scale * tanh(raw) → raw = atanh(action / action_scale)
+        # 数値安定性のため clamp
+        action_normalized = np.clip(actions / self.action_scale, -0.999, 0.999)
+        raw_action = np.arctanh(action_normalized)
+        raw_action_v = Variable(raw_action.astype(np.float32))
+
+        # log_prob 計算: log N(raw | mean, std)
+        # = -0.5 * log(2π) - log(std) - 0.5 * ((raw - mean) / std)^2
+        diff = raw_action_v - mean
+        log_prob = -0.5 * np.log(2 * np.pi) - F.log(std) - 0.5 * (diff / std) ** 2
+
+        # tanh の jacobian 補正: -log(action_scale * (1 - tanh(raw)^2))
+        tanh_raw = F.tanh(raw_action_v)
+        jacobian_correction = F.log(
+            Variable(np.full_like(raw_action, self.action_scale, dtype=np.float32))
+            * (Variable(np.ones_like(raw_action, dtype=np.float32)) - tanh_raw * tanh_raw)
+            + Variable(np.full_like(raw_action, 1e-6, dtype=np.float32))
+        )
+        log_prob = log_prob - jacobian_correction
+
+        # 行動次元で sum
+        log_prob = log_prob.sum(axis=1)
+
+        return log_prob
+
+    def end_episode(self):
+        """エピソード終了時に方策を更新"""
+        if len(self.episode_rewards) == 0:
+            return
+
+        # モンテカルロリターンを計算
+        returns = []
+        G = 0.0
+        for r in reversed(self.episode_rewards):
+            G = r + self.gamma * G
+            returns.insert(0, G)
+
+        returns = np.array(returns, dtype=np.float32)
+
+        # リターンの正規化（分散削減）
+        if self.normalize_returns and len(returns) > 1:
+            returns = (returns - returns.mean()) / (returns.std() + 1e-8)
+
+        # states, actions をテンソルに変換
+        states = Variable(np.array(self.episode_states, dtype=np.float32))
+        actions = np.array(self.episode_actions, dtype=np.float32)
+
+        # 実際に取った行動の log_prob を計算
+        log_probs = self._compute_log_prob(states, actions)
+
+        # 損失: -E[log π(a|s) * G_t]
+        returns_v = Variable(returns.reshape(-1))
+        loss = -(log_probs * returns_v).sum() / len(returns)
+
+        # 更新
+        self.policy.cleargrads()
+        loss.backward()
+        self.optimizer.update()
+
+        # トラジェクトリをクリア
+        self.episode_states = []
+        self.episode_actions = []
+        self.episode_rewards = []
 
 
 # %% [markdown]
-# ## 実行：骨組み確認
+# ## 実行：REINFORCE
 
 # %%
-print("=== Pendulum-v1 ベースライン確認 ===")
+print("=== Pendulum-v1 REINFORCE (dpl) ===")
 print()
 
-# ガウスノイズ付き定数トルクエージェント
-# base_torque=0, sigma=1.0: ほぼランダムだが中心が0
-agent = NoisyConstantAgent(base_torque=0.0, noise_sigma=1.0, action_scale=2.0)
+# REINFORCE エージェント
+agent = ReinforceAgent(
+    state_dim=3,
+    action_dim=1,
+    hidden_dim=64,
+    action_scale=2.0,
+    lr=3e-4,
+    gamma=0.99,
+    normalize_returns=True,
+)
 
 # %%
 # 環境をラップ
@@ -201,15 +278,16 @@ env = GymEnvWrapper(gym.make("Pendulum-v1"))
 eval_env = GymEnvWrapper(gym.make("Pendulum-v1"))
 
 # AgentTrainerで学習
+# REINFORCEはエピソード単位で更新するので update_every は大きくてOK
 trainer = AgentTrainer(
     env=env,
     eval_env=eval_env,
     agent=agent,
-    num_episodes=50,
-    eval_interval=10,
+    num_episodes=500,
+    eval_interval=50,
     eval_n=10,
-    update_every=1,
-    log_interval=10,
+    update_every=9999,  # end_episode で更新するので使わない
+    log_interval=50,
 )
 
 # %%
@@ -219,7 +297,6 @@ result = trainer.train()
 print()
 print(f"Total episodes: {len(result.episode_rewards)}")
 print(f"Eval checkpoints: {len(result.eval_returns)}")
-print(f"Buffer size: {len(agent.buffer)}")
 
 # %% [markdown]
 # ## 学習曲線
@@ -227,11 +304,21 @@ print(f"Buffer size: {len(agent.buffer)}")
 # %%
 fig, axes = plt.subplots(1, 2, figsize=(12, 4))
 
-# Episode Returns
-axes[0].plot(result.episode_rewards)
+# Episode Returns（移動平均付き）
+axes[0].plot(result.episode_rewards, alpha=0.3, label="Episode")
+# 移動平均
+window = 20
+if len(result.episode_rewards) >= window:
+    moving_avg = np.convolve(
+        result.episode_rewards, np.ones(window) / window, mode="valid"
+    )
+    axes[0].plot(
+        range(window - 1, len(result.episode_rewards)), moving_avg, label=f"MA({window})"
+    )
 axes[0].set_xlabel("Episode")
 axes[0].set_ylabel("Return")
 axes[0].set_title("Episode Returns")
+axes[0].legend()
 axes[0].grid(True)
 
 # Eval Returns
@@ -240,7 +327,7 @@ if result.eval_returns:
     axes[1].plot(episodes, means, marker="o")
     axes[1].set_xlabel("Episode")
     axes[1].set_ylabel("Eval Return")
-    axes[1].set_title("Evaluation Returns")
+    axes[1].set_title("Evaluation Returns (explore=False)")
     axes[1].grid(True)
 
 plt.tight_layout()
@@ -259,8 +346,8 @@ for _ in range(200):
     frame = render_env.render()
     frames.append(frame)
 
-    # explore=True でノイズ込みの行動を確認
-    action = agent.act(obs, explore=True)
+    # explore=False で決定的行動を確認
+    action = agent.act(obs, explore=False)
     obs, _, terminated, truncated, _ = render_env.step(action)
 
     if terminated or truncated:
