@@ -1,7 +1,7 @@
 # %% [markdown]
 # # Pendulum-v1 強化学習
 #
-# A2C + GAE（Generalized Advantage Estimation）による連続行動空間の学習
+# DDPG（Deep Deterministic Policy Gradient）による連続行動空間の学習
 # dpl（自作NNライブラリ）を使用
 
 # %%
@@ -14,7 +14,7 @@ from IPython.display import HTML
 from dpl import Variable
 import dpl.functions as F
 import dpl.layers as L
-from dpl.optimizers import Adam, GradientClip
+from dpl.optimizers import Adam
 
 from dpl.agent import BaseAgent, ReplayBuffer
 from dpl.agent_trainer import AgentTrainer, GymEnvWrapper, EvalResult
@@ -33,165 +33,177 @@ from dpl.agent_trainer import AgentTrainer, GymEnvWrapper, EvalResult
 # | truncated | 200ステップでTrue |
 
 # %% [markdown]
-# ## A2C + GAE（Generalized Advantage Estimation）
+# ## DDPG（Deep Deterministic Policy Gradient）
 #
-# GAEを使用したActor-Critic。Nステップごとに更新。
+# オフポリシーのActor-Critic。SACの前段階として重要。
 #
-# - Actor（方策）: π(a|s) = N(μ(s), σ(s))
-# - Critic（価値関数）: V(s) → 状態の期待リターンを推定
-# - TD誤差: δ_t = r_t + γV(s_{t+1}) - V(s_t)
-# - GAE Advantage: A_t = Σ (γλ)^l δ_{t+l}（λ=0.95でバイアス-分散トレードオフ）
-# - Actor損失: -E[log π(a|s) * A_t]
-# - Critic損失: MSE(V(s), A_t + V(s_t))
+# ## DDPGの特徴
+# - **Replay Buffer**: 経験を貯めてミニバッチ学習（サンプル効率向上）
+# - **Target Network**: θ' ← τθ + (1-τ)θ'（学習の安定化）
+# - **Deterministic Policy**: π(s) = μ(s)（確定的方策）
+# - **Q学習**: Q(s,a) を学習（状態と行動の両方を入力）
+#
+# ## 更新式
+# - Critic: L = E[(Q(s,a) - (r + γQ'(s', μ'(s'))))²]
+# - Actor: ∇_θ E[Q(s, μ_θ(s))] を最大化
+#
+# ## 探索
+# - 探索ノイズ: a = μ(s) + ε（ガウスノイズ）
 
 
 # %%
 from dpl.layers import Layer, Sequential
 
 
-class GaussianPolicy(Layer):
-    """ガウス方策ネットワーク
+class DeterministicPolicy(Layer):
+    """決定的方策ネットワーク（DDPG Actor）
 
-    状態 s → (μ, σ) を出力
-    Layerを継承して params()/cleargrads() を利用
+    状態 s → action を直接出力（tanh でスケーリング）
     """
 
     def __init__(
         self,
         state_dim: int,
         action_dim: int,
-        hidden_dim: int = 64,
+        hidden_dim: int = 256,
         action_scale: float = 2.0,
-        log_std_min: float = -2.0,
-        log_std_max: float = 0.5,
     ):
         super().__init__()
         self.action_scale = action_scale
-        self.log_std_min = log_std_min
-        self.log_std_max = log_std_max
 
-        # 共有層
-        self.shared = Sequential(
-            L.Linear(hidden_dim, in_size=state_dim),
-            F.relu,
-            L.Linear(hidden_dim),
-            F.relu,
-        )
-
-        # μ と log_σ を別々に出力
-        self.mean_head = L.Linear(action_dim)
-        self.log_std_head = L.Linear(action_dim)
-
-    def predict(self, state: Variable) -> tuple[Variable, Variable]:
-        """状態から平均と標準偏差を出力"""
-        h = self.shared.apply(state)
-
-        mean = self.mean_head.apply(h)
-        log_std = self.log_std_head.apply(h)
-
-        # log_std をクランプ
-        log_std_data = np.clip(
-            log_std.data_required, self.log_std_min, self.log_std_max
-        )
-        log_std = Variable(log_std_data)
-        std = F.exp(log_std)
-
-        return mean, std
-
-
-# %%
-class ValueNetwork(Layer):
-    """価値関数ネットワーク（Critic）
-
-    状態 s → V(s) を出力
-    """
-
-    def __init__(self, state_dim: int, hidden_dim: int = 64):
-        super().__init__()
         self.net = Sequential(
             L.Linear(hidden_dim, in_size=state_dim),
             F.relu,
             L.Linear(hidden_dim),
             F.relu,
-            L.Linear(1),  # スカラー出力
+            L.Linear(action_dim),
+            F.tanh,
         )
 
     def predict(self, state: Variable) -> Variable:
-        """状態から価値を出力"""
-        return self.net.apply(state)
+        """状態から行動を出力（-action_scale ~ action_scale）"""
+        return self.net.apply(state) * self.action_scale
 
 
 # %%
-class A2CAgent(BaseAgent):
-    """A2C（Advantage Actor-Critic）+ GAE エージェント
+class QNetwork(Layer):
+    """Q関数ネットワーク（DDPG Critic）
 
-    GAE（Generalized Advantage Estimation）を使用したActor-Critic。
-    dpl（自作NNライブラリ）を使用。
+    (状態 s, 行動 a) → Q(s, a) を出力
+    """
+
+    def __init__(self, state_dim: int, action_dim: int, hidden_dim: int = 256):
+        super().__init__()
+        # 状態と行動を結合して入力
+        self.fc1 = L.Linear(hidden_dim, in_size=state_dim + action_dim)
+        self.fc2 = L.Linear(hidden_dim)
+        self.fc3 = L.Linear(1)
+
+    def predict(self, state: Variable, action: Variable) -> Variable:
+        """状態と行動からQ値を出力"""
+        # 状態と行動を結合（axis=1で特徴量方向に結合）
+        x = F.concat([state, action], axis=1)
+        x = F.relu(self.fc1.apply(x))
+        x = F.relu(self.fc2.apply(x))
+        return self.fc3.apply(x)
+
+
+# %%
+def soft_update(target: Layer, source: Layer, tau: float):
+    """ターゲットネットワークのソフト更新: θ' ← τθ + (1-τ)θ'"""
+    for target_param, source_param in zip(target.params(), source.params()):
+        target_param.data = (
+            tau * source_param.data_required + (1 - tau) * target_param.data_required
+        )
+
+
+def hard_update(target: Layer, source: Layer):
+    """ターゲットネットワークのハード更新（完全コピー）"""
+    for target_param, source_param in zip(target.params(), source.params()):
+        target_param.data = source_param.data_required.copy()
+
+
+# %%
+class DDPGAgent(BaseAgent):
+    """DDPG（Deep Deterministic Policy Gradient）エージェント
+
+    オフポリシーのActor-Critic。
+    - Replay Buffer でサンプル効率向上
+    - Target Network で学習安定化
+    - 探索ノイズで探索
     """
 
     def __init__(
         self,
         state_dim: int = 3,
         action_dim: int = 1,
-        hidden_dim: int = 64,
+        hidden_dim: int = 256,
         action_scale: float = 2.0,
-        actor_lr: float = 3e-4,
+        actor_lr: float = 1e-4,
         critic_lr: float = 1e-3,
         gamma: float = 0.99,
-        gae_lambda: float = 0.95,
-        n_steps: int = 5,
-        critic_update_steps: int = 5,
+        tau: float = 0.005,
+        buffer_size: int = 100000,
+        batch_size: int = 256,
+        exploration_noise: float = 0.1,
+        warmup_steps: int = 1000,
     ):
         self.gamma = gamma
-        self.gae_lambda = gae_lambda
+        self.tau = tau
         self.action_scale = action_scale
-        self.n_steps = n_steps
-        self.critic_update_steps = critic_update_steps
+        self.batch_size = batch_size
+        self.exploration_noise = exploration_noise
+        self.warmup_steps = warmup_steps
+        self.total_steps = 0
 
-        # Actor（方策ネットワーク）
-        self.policy = GaussianPolicy(state_dim, action_dim, hidden_dim, action_scale)
-        self.actor_optimizer = Adam(lr=actor_lr).setup(self.policy)
-        self.actor_optimizer.add_hook(GradientClip(max_norm=0.5))
+        # Actor（決定的方策）
+        self.actor = DeterministicPolicy(
+            state_dim, action_dim, hidden_dim, action_scale
+        )
+        self.actor_target = DeterministicPolicy(
+            state_dim, action_dim, hidden_dim, action_scale
+        )
+        # ダミーのforward passで重みを初期化
+        dummy_state = Variable(np.zeros((1, state_dim), dtype=np.float32))
+        dummy_action = self.actor.predict(dummy_state)
+        _ = self.actor_target.predict(dummy_state)
+        hard_update(self.actor_target, self.actor)
+        self.actor_optimizer = Adam(lr=actor_lr).setup(self.actor)
 
-        # Critic（価値関数ネットワーク）
-        self.critic = ValueNetwork(state_dim, hidden_dim)
+        # Critic（Q関数）
+        self.critic = QNetwork(state_dim, action_dim, hidden_dim)
+        self.critic_target = QNetwork(state_dim, action_dim, hidden_dim)
+        # ダミーのforward passで重みを初期化
+        _ = self.critic.predict(dummy_state, dummy_action)
+        _ = self.critic_target.predict(dummy_state, dummy_action)
+        hard_update(self.critic_target, self.critic)
         self.critic_optimizer = Adam(lr=critic_lr).setup(self.critic)
-        self.critic_optimizer.add_hook(GradientClip(max_norm=0.5))
 
-        # N-step用バッファ
-        self.states: list[np.ndarray] = []
-        self.actions: list[np.ndarray] = []
-        self.rewards: list[float] = []
-        self.next_states: list[np.ndarray] = []
-        self.dones: list[bool] = []
-
-        # ダミーバッファ（インターフェース互換用）
-        self.buffer = ReplayBuffer(capacity=1, continuous_action=True)
+        # Replay Buffer
+        self.buffer = ReplayBuffer(capacity=buffer_size, continuous_action=True)
 
         # 最新のloss（モニタリング用）
         self.last_actor_loss: float | None = None
         self.last_critic_loss: float | None = None
-
-        # 統計履歴（可視化用）
-        self.history_a_raw_std: list[float] = []
-        self.history_delta_std: list[float] = []
-        self.history_log_std_mean: list[float] = []
 
     def get_action(self, state: np.ndarray) -> np.ndarray:
         return self.act(state, explore=True)
 
     def act(self, state: np.ndarray, explore: bool = True) -> np.ndarray:
         state_v = Variable(state.reshape(1, -1).astype(np.float32))
-        mean, std = self.policy.predict(state_v)
+        action = self.actor.predict(state_v).data_required.flatten()
 
         if explore:
-            eps = np.random.randn(*mean.shape).astype(np.float32)
-            raw_action = mean.data_required + std.data_required * eps
-        else:
-            raw_action = mean.data_required
+            # ガウスノイズで探索
+            noise = (
+                np.random.randn(*action.shape)
+                * self.exploration_noise
+                * self.action_scale
+            )
+            action = action + noise
+            action = np.clip(action, -self.action_scale, self.action_scale)
 
-        action = self.action_scale * np.tanh(raw_action)
-        return action.flatten().astype(np.float32)
+        return action.astype(np.float32)
 
     def store(
         self,
@@ -203,131 +215,76 @@ class A2CAgent(BaseAgent):
         *,
         terminated=None,
     ):
-        self.states.append(state)
-        self.actions.append(action)
-        self.rewards.append(reward)
-        self.next_states.append(next_state)
-        # truncated(時間切れ)ではbootstrapを切らない、terminatedのみ切る
-        self.dones.append(terminated if terminated is not None else done)
+        self.buffer.push(state, action, reward, next_state, done)
+        self.total_steps += 1
 
     def update(self) -> dict | None:
-        """Nステップ分たまったら更新"""
-        if len(self.states) < self.n_steps:
+        """Replay Bufferからサンプリングして更新"""
+        # Warmup期間中は更新しない
+        if self.total_steps < self.warmup_steps:
             return None
 
-        return self._update_from_buffer()
+        # バッファサイズが足りない場合は更新しない
+        if len(self.buffer) < self.batch_size:
+            return None
 
-    def _update_from_buffer(self) -> dict:
-        """バッファからActor/Criticを更新（GAE使用）"""
-        states = Variable(np.array(self.states, dtype=np.float32))
-        actions = np.array(self.actions, dtype=np.float32)
-        rewards = np.array(self.rewards, dtype=np.float32)
-        next_states = Variable(np.array(self.next_states, dtype=np.float32))
-        dones = np.array(self.dones, dtype=np.float32)
+        # ミニバッチサンプリング
+        states, actions, rewards, next_states, dones = self.buffer.sample(
+            self.batch_size
+        )
 
-        # 価値を計算
-        values = self.critic.predict(states).data_required.reshape(-1)
-        next_values = self.critic.predict(next_states).data_required.reshape(-1)
+        states_v = Variable(states)
+        actions_v = Variable(actions)
+        rewards_v = rewards.reshape(-1, 1)
+        next_states_v = Variable(next_states)
+        dones_v = dones.reshape(-1, 1)
 
-        # GAE（Generalized Advantage Estimation）を計算
-        # δ_t = r_t + γV(s_{t+1}) - V(s_t)
-        # A_t^GAE = Σ (γλ)^l * δ_{t+l}
-        deltas = rewards + self.gamma * next_values * (1 - dones) - values
-        advantages = np.zeros_like(rewards)
-        gae = 0.0
-        for t in reversed(range(len(rewards))):
-            gae = deltas[t] + self.gamma * self.gae_lambda * (1 - dones[t]) * gae
-            advantages[t] = gae
+        # --- Critic更新 ---
+        # TDターゲット: y = r + γ * Q'(s', μ'(s'))
+        next_actions = self.actor_target.predict(next_states_v)
+        target_q = self.critic_target.predict(next_states_v, next_actions).data_required
+        td_target = rewards_v + self.gamma * target_q * (1 - dones_v)
+        td_target_v = Variable(td_target.astype(np.float32))
 
-        # リターン（Critic学習用）: G_t = A_t^GAE + V(s_t)
-        returns = advantages + values
-        returns_v = Variable(returns.reshape(-1, 1).astype(np.float32))
+        # 現在のQ値
+        current_q = self.critic.predict(states_v, actions_v)
 
-        # 統計記録（正規化前）
-        self.history_a_raw_std.append(float(advantages.std()))
-        self.history_delta_std.append(float(deltas.std()))
-        # log_std を取得（policy から）
-        _, std = self.policy.predict(states)
-        log_std = np.log(std.data_required + 1e-8)
-        self.history_log_std_mean.append(float(log_std.mean()))
+        # Critic損失: MSE
+        critic_loss = ((current_q - td_target_v) ** 2).sum() / self.batch_size
 
-        # Advantageの正規化
-        if len(advantages) > 1:
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-        advantages_v = Variable(advantages.astype(np.float32))
+        self.critic.cleargrads()
+        critic_loss.backward()
+        self.critic_optimizer.update()
 
         # --- Actor更新 ---
-        log_probs = self._compute_log_prob(states, actions)
-        actor_loss = -(log_probs * advantages_v).sum() / len(self.states)
+        # Actor損失: -E[Q(s, μ(s))]（Q値を最大化）
+        predicted_actions = self.actor.predict(states_v)
+        actor_loss = (
+            -self.critic.predict(states_v, predicted_actions).sum() / self.batch_size
+        )
 
-        self.policy.cleargrads()
+        self.actor.cleargrads()
         actor_loss.backward()
         self.actor_optimizer.update()
 
-        # --- Critic更新（複数回） ---
-        critic_loss_value = 0.0
-        for _ in range(self.critic_update_steps):
-            values = self.critic.predict(states)
-            critic_loss = ((values - returns_v) ** 2).sum() / len(self.states)
-            critic_loss_value = float(critic_loss.data_required)
+        # --- ターゲットネットワークのソフト更新 ---
+        soft_update(self.actor_target, self.actor, self.tau)
+        soft_update(self.critic_target, self.critic, self.tau)
 
-            self.critic.cleargrads()
-            critic_loss.backward()
-            self.critic_optimizer.update()
-
-        # lossを保存（モニタリング用）
+        # lossを保存
         self.last_actor_loss = float(actor_loss.data_required)
-        self.last_critic_loss = critic_loss_value
-
-        # バッファをクリア
-        self.states = []
-        self.actions = []
-        self.rewards = []
-        self.next_states = []
-        self.dones = []
+        self.last_critic_loss = float(critic_loss.data_required)
 
         return {
             "actor_loss": self.last_actor_loss,
             "critic_loss": self.last_critic_loss,
         }
 
-    def _compute_log_prob(self, states: Variable, actions: np.ndarray) -> Variable:
-        """行動に対する log_prob を計算（tanh 補正込み）"""
-        mean, std = self.policy.predict(states)
-
-        action_normalized = np.clip(actions / self.action_scale, -0.999, 0.999)
-        raw_action = np.arctanh(action_normalized)
-        raw_action_v = Variable(raw_action.astype(np.float32))
-
-        diff = raw_action_v - mean
-        log_prob = -0.5 * np.log(2 * np.pi) - F.log(std) - 0.5 * (diff / std) ** 2
-
-        tanh_raw = F.tanh(raw_action_v)
-        jacobian_correction = F.log(
-            Variable(np.full_like(raw_action, self.action_scale, dtype=np.float32))
-            * (
-                Variable(np.ones_like(raw_action, dtype=np.float32))
-                - tanh_raw * tanh_raw
-            )
-            + Variable(np.full_like(raw_action, 1e-6, dtype=np.float32))
-        )
-        log_prob = log_prob - jacobian_correction
-
-        log_prob = log_prob.sum(axis=1)
-        return log_prob
-
     def start_episode(self):
-        """エピソード開始時にバッファをクリア"""
-        self.states = []
-        self.actions = []
-        self.rewards = []
-        self.next_states = []
-        self.dones = []
+        pass
 
     def end_episode(self):
-        """エピソード終了時に残りのバッファを更新"""
-        if len(self.states) > 0:
-            self._update_from_buffer()
+        pass
 
 
 # %% [markdown]
@@ -356,24 +313,26 @@ def pendulum_eval_stats_extractor(result: EvalResult) -> str:
 
 
 # %% [markdown]
-# ## 実行：A2C + GAE
+# ## 実行：DDPG
 
 # %%
-print("=== Pendulum-v1 A2C + GAE (dpl) ===")
+print("=== Pendulum-v1 DDPG (dpl) ===")
 print()
 
-# A2C + GAE エージェント
-agent = A2CAgent(
+# DDPG エージェント
+agent = DDPGAgent(
     state_dim=3,
     action_dim=1,
-    hidden_dim=64,
+    hidden_dim=256,
     action_scale=2.0,
     actor_lr=1e-4,
     critic_lr=1e-3,
     gamma=0.99,
-    gae_lambda=0.95,
-    n_steps=5,
-    critic_update_steps=5,
+    tau=0.005,
+    buffer_size=100000,
+    batch_size=256,
+    exploration_noise=0.1,
+    warmup_steps=1000,
 )
 
 # %%
@@ -384,11 +343,11 @@ env = GymEnvWrapper(gym.make("Pendulum-v1"))
 trainer = AgentTrainer(
     env=env,
     agent=agent,
-    num_episodes=500,
-    eval_interval=50,
+    num_episodes=200,
+    eval_interval=20,
     eval_n=10,
-    update_every=1,
-    log_interval=50,
+    update_every=1,  # 毎ステップ更新
+    log_interval=20,
     stats_extractor=pendulum_stats_extractor,
     eval_stats_extractor=pendulum_eval_stats_extractor,
 )
@@ -421,7 +380,7 @@ if len(result.episode_rewards) >= window:
     )
 axes[0].set_xlabel("Episode")
 axes[0].set_ylabel("Return")
-axes[0].set_title("Episode Returns")
+axes[0].set_title("DDPG Episode Returns")
 axes[0].legend()
 axes[0].grid(True)
 
@@ -431,50 +390,8 @@ if result.eval_returns:
     axes[1].plot(episodes, means, marker="o")
     axes[1].set_xlabel("Episode")
     axes[1].set_ylabel("Eval Return")
-    axes[1].set_title("Evaluation Returns (explore=False)")
+    axes[1].set_title("DDPG Evaluation Returns (explore=False)")
     axes[1].grid(True)
-
-plt.tight_layout()
-plt.show()
-
-# %% [markdown]
-# ## 学習統計（A_raw_std, delta_std, log_std_mean）
-
-# %%
-fig, axes = plt.subplots(1, 3, figsize=(15, 4))
-
-# A_raw_std（正規化前のAdvantageの標準偏差）
-axes[0].plot(agent.history_a_raw_std, alpha=0.5)
-if len(agent.history_a_raw_std) >= 20:
-    ma = np.convolve(agent.history_a_raw_std, np.ones(20) / 20, mode="valid")
-    axes[0].plot(range(19, len(agent.history_a_raw_std)), ma, label="MA(20)")
-axes[0].set_xlabel("Update Step")
-axes[0].set_ylabel("Std")
-axes[0].set_title("A_raw_std (Advantage before norm)")
-axes[0].grid(True)
-axes[0].legend()
-
-# delta_std（TD誤差の標準偏差）
-axes[1].plot(agent.history_delta_std, alpha=0.5)
-if len(agent.history_delta_std) >= 20:
-    ma = np.convolve(agent.history_delta_std, np.ones(20) / 20, mode="valid")
-    axes[1].plot(range(19, len(agent.history_delta_std)), ma, label="MA(20)")
-axes[1].set_xlabel("Update Step")
-axes[1].set_ylabel("Std")
-axes[1].set_title("delta_std (TD error std)")
-axes[1].grid(True)
-axes[1].legend()
-
-# log_std_mean（方策のlog標準偏差の平均）
-axes[2].plot(agent.history_log_std_mean, alpha=0.5)
-if len(agent.history_log_std_mean) >= 20:
-    ma = np.convolve(agent.history_log_std_mean, np.ones(20) / 20, mode="valid")
-    axes[2].plot(range(19, len(agent.history_log_std_mean)), ma, label="MA(20)")
-axes[2].set_xlabel("Update Step")
-axes[2].set_ylabel("log_std")
-axes[2].set_title("log_std_mean (Policy exploration)")
-axes[2].grid(True)
-axes[2].legend()
 
 plt.tight_layout()
 plt.show()
