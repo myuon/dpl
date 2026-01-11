@@ -65,8 +65,8 @@ class GaussianPolicy(Layer):
         action_dim: int,
         hidden_dim: int = 64,
         action_scale: float = 2.0,
-        log_std_min: float = -20.0,
-        log_std_max: float = 2.0,
+        log_std_min: float = -5.0,
+        log_std_max: float = 1.0,
     ):
         super().__init__()
         self.action_scale = action_scale
@@ -275,27 +275,50 @@ class ReinforceAgent(BaseAgent):
         returns_v = Variable(returns.reshape(-1, 1))
 
         # states, actions をテンソルに変換
-        states = Variable(np.array(self.episode_states, dtype=np.float32))
+        states_np = np.array(self.episode_states, dtype=np.float32)
+        states = Variable(states_np)
         actions = np.array(self.episode_actions, dtype=np.float32)
+
+        # デバッグ: states の多様性チェック
+        self.last_states_shape = states_np.shape  # 期待: (T, 3)
+        self.last_states_std_per_dim = states_np.std(axis=0).tolist()  # 各次元のstd
+        self.last_states_mean_per_dim = states_np.mean(axis=0).tolist()
 
         # Critic: V(s) を計算
         values = self.critic.predict(states)  # shape: (T, 1)
 
-        # V(s) のモニタリング（デバッグ用）
+        # 1) V(s) の統計（デバッグ用）
         values_np = values.data_required.reshape(-1)
+        self.last_value_mean = float(values_np.mean())
+        self.last_value_std = float(values_np.std())
         self.last_value_min = float(values_np.min())
         self.last_value_max = float(values_np.max())
-        self.last_value_mean = float(values_np.mean())
+        # target（G_t）の統計
+        self.last_target_mean = float(returns.mean())
+        self.last_target_std = float(returns.std())
 
         # Advantage: A_t = G_t - V(s_t)
         # .data_required で計算グラフから切り離す（Actor更新時にCriticの勾配が流れないように）
         advantages = returns_v.data_required - values.data_required
         advantages = advantages.reshape(-1)
 
+        # 2) Advantage の統計（正規化前）
+        self.last_adv_mean_raw = float(advantages.mean())
+        self.last_adv_std_raw = float(advantages.std())
+        self.last_adv_min_raw = float(advantages.min())
+        self.last_adv_max_raw = float(advantages.max())
+
         # Advantageの正規化（分散削減）
         if len(advantages) > 1:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         advantages_v = Variable(advantages.astype(np.float32))
+
+        # 3) 方策の std の統計
+        _, std = self.policy.predict(states)
+        std_np = std.data_required.reshape(-1)
+        self.last_policy_std_mean = float(std_np.mean())
+        self.last_policy_std_min = float(std_np.min())
+        self.last_policy_std_max = float(std_np.max())
 
         # --- Actor更新 ---
         log_probs = self._compute_log_prob(states, actions)
@@ -420,7 +443,8 @@ class A2CAgent(BaseAgent):
         self.actions.append(action)
         self.rewards.append(reward)
         self.next_states.append(next_state)
-        self.dones.append(done)
+        # truncated(時間切れ)ではbootstrapを切らない、terminatedのみ切る
+        self.dones.append(terminated if terminated is not None else done)
 
     def update(self) -> dict | None:
         """Nステップ分たまったら更新"""
@@ -431,11 +455,17 @@ class A2CAgent(BaseAgent):
 
     def _update_from_buffer(self) -> dict:
         """バッファからActor/Criticを更新"""
-        states = Variable(np.array(self.states, dtype=np.float32))
+        states_np = np.array(self.states, dtype=np.float32)
+        states = Variable(states_np)
         actions = np.array(self.actions, dtype=np.float32)
         rewards = np.array(self.rewards, dtype=np.float32)
         next_states = Variable(np.array(self.next_states, dtype=np.float32))
         dones = np.array(self.dones, dtype=np.float32)
+
+        # デバッグ: states の多様性チェック
+        self.last_states_shape = states_np.shape  # 期待: (n_steps, 3)
+        self.last_states_std_per_dim = states_np.std(axis=0).tolist()  # 各次元のstd
+        self.last_states_mean_per_dim = states_np.mean(axis=0).tolist()
 
         # TD targets: r + γV(s') * (1 - done)
         next_values = self.critic.predict(next_states).data_required.reshape(-1)
@@ -445,14 +475,37 @@ class A2CAgent(BaseAgent):
         # 現在の価値
         values = self.critic.predict(states)
 
+        # 1) V(s) の統計（デバッグ用）
+        values_np = values.data_required.reshape(-1)
+        self.last_value_mean = float(values_np.mean())
+        self.last_value_std = float(values_np.std())
+        self.last_value_min = float(values_np.min())
+        self.last_value_max = float(values_np.max())
+        # target（TD target）の統計
+        self.last_target_mean = float(td_targets.mean())
+        self.last_target_std = float(td_targets.std())
+
         # TD誤差（Advantage）
         advantages = td_targets_v.data_required - values.data_required
         advantages = advantages.reshape(-1)
+
+        # 2) Advantage の統計（正規化前）
+        self.last_adv_mean_raw = float(advantages.mean())
+        self.last_adv_std_raw = float(advantages.std())
+        self.last_adv_min_raw = float(advantages.min())
+        self.last_adv_max_raw = float(advantages.max())
 
         # Advantageの正規化
         if len(advantages) > 1:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         advantages_v = Variable(advantages.astype(np.float32))
+
+        # 3) 方策の std の統計
+        _, std = self.policy.predict(states)
+        std_np = std.data_required.reshape(-1)
+        self.last_policy_std_mean = float(std_np.mean())
+        self.last_policy_std_min = float(std_np.min())
+        self.last_policy_std_max = float(std_np.max())
 
         # --- Actor更新 ---
         log_probs = self._compute_log_prob(states, actions)

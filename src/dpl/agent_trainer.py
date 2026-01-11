@@ -202,29 +202,40 @@ class AgentTrainer:
         if actor_loss is not None and critic_loss is not None:
             loss_str = f"ActorLoss = {actor_loss:.4f}, CriticLoss = {critic_loss:.4f}"
 
-        # G_t（return）と V(s) のモニタリング
-        return_min = getattr(self.agent, "last_return_min", None)
-        return_max = getattr(self.agent, "last_return_max", None)
-        return_mean = getattr(self.agent, "last_return_mean", None)
+        # 1) V(s) の統計
+        value_mean = getattr(self.agent, "last_value_mean", None)
+        value_std = getattr(self.agent, "last_value_std", None)
         value_min = getattr(self.agent, "last_value_min", None)
         value_max = getattr(self.agent, "last_value_max", None)
-        value_mean = getattr(self.agent, "last_value_mean", None)
+        target_mean = getattr(self.agent, "last_target_mean", None)
+        target_std = getattr(self.agent, "last_target_std", None)
 
-        # デバッグ: returns の妥当性チェック
-        num_rewards = getattr(self.agent, "last_num_rewards", None)
-        sum_rewards = getattr(self.agent, "last_sum_rewards", None)
-        return_first = getattr(self.agent, "last_return_first", None)
-        return_last = getattr(self.agent, "last_return_last", None)
-        reward_last = getattr(self.agent, "last_reward_last", None)
+        # 2) Advantage の統計（正規化前）
+        adv_mean = getattr(self.agent, "last_adv_mean_raw", None)
+        adv_std = getattr(self.agent, "last_adv_std_raw", None)
+        adv_min = getattr(self.agent, "last_adv_min_raw", None)
+        adv_max = getattr(self.agent, "last_adv_max_raw", None)
+
+        # 3) 方策の std の統計
+        policy_std_mean = getattr(self.agent, "last_policy_std_mean", None)
+        policy_std_min = getattr(self.agent, "last_policy_std_min", None)
+        policy_std_max = getattr(self.agent, "last_policy_std_max", None)
+
+        # 4) States の多様性チェック
+        states_shape = getattr(self.agent, "last_states_shape", None)
+        states_std = getattr(self.agent, "last_states_std_per_dim", None)
 
         debug_str = ""
-        if return_min is not None:
-            debug_str = f"\n  → G_t=[{return_min:.0f}, {return_max:.0f}] mean={return_mean:.0f}"
-            if value_min is not None:
-                debug_str += f", V(s)=[{value_min:.0f}, {value_max:.0f}] mean={value_mean:.0f}"
-
-        if num_rewards is not None:
-            debug_str += f"\n  → len(rewards)={num_rewards}, sum(rewards)={sum_rewards:.0f}, G_0={return_first:.0f}, G_T={return_last:.1f}, r_T={reward_last:.2f}"
+        if value_mean is not None:
+            debug_str += f"\n  → V(s): mean={value_mean:.1f} std={value_std:.1f} [{value_min:.1f}, {value_max:.1f}]"
+            debug_str += f" | Target: mean={target_mean:.1f} std={target_std:.1f}"
+        if adv_mean is not None:
+            debug_str += f"\n  → Adv(raw): mean={adv_mean:.2f} std={adv_std:.2f} [{adv_min:.2f}, {adv_max:.2f}]"
+        if policy_std_mean is not None:
+            debug_str += f"\n  → Policy σ: mean={policy_std_mean:.3f} [{policy_std_min:.3f}, {policy_std_max:.3f}]"
+        if states_shape is not None:
+            std_str = ", ".join([f"{s:.3f}" for s in states_std])
+            debug_str += f"\n  → States: shape={states_shape}, std=[{std_str}]"
 
         print(
             f"Episode {episode + 1}: Reward = {total_reward:.2f}, "
