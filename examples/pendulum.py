@@ -17,7 +17,7 @@ import dpl.layers as L
 from dpl.optimizers import Adam
 
 from dpl.agent import BaseAgent, ReplayBuffer
-from dpl.agent_trainer import AgentTrainer, GymEnvWrapper
+from dpl.agent_trainer import AgentTrainer, GymEnvWrapper, EvalResult
 
 # %% [markdown]
 # ## 環境仕様（参照用）
@@ -323,6 +323,11 @@ def pendulum_stats_extractor(agent) -> str | None:
     return ", " + ", ".join(parts)
 
 
+def pendulum_eval_stats_extractor(result: EvalResult) -> str:
+    """Pendulum評価結果の表示"""
+    return f"Return={result.avg_return:.2f}, Mean|Action|={result.mean_abs_action:.3f}"
+
+
 # %% [markdown]
 # ## 実行：A2C
 
@@ -346,12 +351,10 @@ agent = A2CAgent(
 # %%
 # 環境をラップ
 env = GymEnvWrapper(gym.make("Pendulum-v1"))
-eval_env = GymEnvWrapper(gym.make("Pendulum-v1"))
 
 # AgentTrainerで学習
 trainer = AgentTrainer(
     env=env,
-    eval_env=eval_env,
     agent=agent,
     num_episodes=500,
     eval_interval=50,
@@ -359,6 +362,7 @@ trainer = AgentTrainer(
     update_every=1,
     log_interval=50,
     stats_extractor=pendulum_stats_extractor,
+    eval_stats_extractor=pendulum_eval_stats_extractor,
 )
 
 # %%

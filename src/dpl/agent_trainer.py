@@ -8,6 +8,23 @@ from dpl.agent import Agent
 StatsExtractor = Callable[[Agent], str | None]
 
 
+@dataclass
+class EvalResult:
+    """評価結果"""
+
+    avg_return: float
+    success_rate: float
+    avg_steps: float
+    avg_return_success: float
+    avg_return_fail: float
+    mean_abs_action: float
+    n: int
+
+
+# 評価統計抽出関数の型: EvalResult を受け取り、表示する文字列を返す
+EvalStatsExtractor = Callable[[EvalResult], str]
+
+
 class Env(Protocol):
     """環境のプロトコル（離散/連続行動空間対応）"""
 
@@ -64,8 +81,8 @@ class AgentTrainer:
     def __init__(
         self,
         env: Env,
-        eval_env: Env,
         agent: Agent,
+        eval_env: Env | None = None,
         num_episodes: int = 500,
         eval_interval: int = 50,
         eval_n: int = 20,
@@ -75,9 +92,10 @@ class AgentTrainer:
         burn_in_steps: int = 0,
         burn_in_epsilon: float = 0.2,
         stats_extractor: StatsExtractor | None = None,
+        eval_stats_extractor: EvalStatsExtractor | None = None,
     ):
         self.env = env
-        self.eval_env = eval_env
+        self.eval_env = eval_env if eval_env is not None else env
         self.agent = agent
         self.num_episodes = num_episodes
         self.eval_interval = eval_interval
@@ -88,6 +106,7 @@ class AgentTrainer:
         self.burn_in_steps = burn_in_steps
         self.burn_in_epsilon = burn_in_epsilon
         self.stats_extractor = stats_extractor
+        self.eval_stats_extractor = eval_stats_extractor
 
     def train(self) -> TrainResult:
         """トレーニングを実行"""
@@ -116,27 +135,32 @@ class AgentTrainer:
             # 評価
             if (episode + 1) % self.eval_interval == 0:
                 # Eval-A: ε=0（完全greedy）
-                eval_return, success_rate, avg_steps, avg_success, avg_fail, mean_abs_action = self.evaluate(n=self.eval_n)
-                eval_returns.append((episode + 1, eval_return))
-                eval_success_rates.append((episode + 1, success_rate))
-                eval_avg_steps.append((episode + 1, avg_steps))
-                print(
-                    f"  → Eval-A (ε=0, n={self.eval_n}): Return={eval_return:.2f}, "
-                    f"Success={success_rate*100:.0f}% ({int(success_rate*self.eval_n)}/{self.eval_n}), "
-                    f"AvgSteps={avg_steps:.1f}, Mean|Action|={mean_abs_action:.3f}"
-                )
+                eval_result = self.evaluate(n=self.eval_n)
+                eval_returns.append((episode + 1, eval_result.avg_return))
+                eval_success_rates.append((episode + 1, eval_result.success_rate))
+                eval_avg_steps.append((episode + 1, eval_result.avg_steps))
+
+                if self.eval_stats_extractor is not None:
+                    print(f"  → Eval: {self.eval_stats_extractor(eval_result)}")
+                else:
+                    # デフォルト表示
+                    print(
+                        f"  → Eval (n={eval_result.n}): Return={eval_result.avg_return:.2f}, "
+                        f"Success={eval_result.success_rate*100:.0f}%, "
+                        f"AvgSteps={eval_result.avg_steps:.1f}"
+                    )
 
                 # Eval-B: 最初burn_in stepでε>0、その後ε=0（情報収集付き）
                 if self.burn_in_steps > 0:
-                    _, success_rate_b, _, _, _, _ = self.evaluate(
+                    eval_result_b = self.evaluate(
                         n=self.eval_n,
                         burn_in_steps=self.burn_in_steps,
                         burn_in_epsilon=self.burn_in_epsilon,
                     )
-                    eval_b_success_rates.append((episode + 1, success_rate_b))
+                    eval_b_success_rates.append((episode + 1, eval_result_b.success_rate))
                     print(
-                        f"  → Eval-B (burn_in={self.burn_in_steps}, ε={self.burn_in_epsilon}, n={self.eval_n}): "
-                        f"Success={success_rate_b*100:.0f}% ({int(success_rate_b*self.eval_n)}/{self.eval_n})"
+                        f"  → Eval-B (burn_in={self.burn_in_steps}, ε={self.burn_in_epsilon}): "
+                        f"Success={eval_result_b.success_rate*100:.0f}%"
                     )
 
         return TrainResult(
@@ -214,7 +238,7 @@ class AgentTrainer:
         n: int = 20,
         burn_in_steps: int = 0,
         burn_in_epsilon: float = 0.0,
-    ) -> tuple[float, float, float, float, float, float]:
+    ) -> EvalResult:
         """評価を実行
 
         Args:
@@ -223,13 +247,7 @@ class AgentTrainer:
             burn_in_epsilon: burn_in_steps中に使うepsilon値
 
         Returns:
-            (avg_return, success_rate, avg_steps_to_goal, avg_return_success, avg_return_fail, mean_abs_action)
-            - avg_return: 平均リターン
-            - success_rate: ゴール到達率 (0.0 ~ 1.0)
-            - avg_steps_to_goal: ゴール到達時の平均ステップ数（到達なしの場合は0）
-            - avg_return_success: 成功時の平均リターン（成功なしの場合は0）
-            - avg_return_fail: 失敗時の平均リターン（失敗なしの場合は0）
-            - mean_abs_action: 平均絶対行動値
+            EvalResult: 評価結果
         """
         returns = []
         returns_success = []
@@ -269,11 +287,12 @@ class AgentTrainer:
             else:
                 returns_fail.append(total)
 
-        avg_return = float(np.mean(returns))
-        success_rate = len(returns_success) / n
-        avg_steps = float(np.mean(steps_to_goal)) if steps_to_goal else 0.0
-        avg_return_success = float(np.mean(returns_success)) if returns_success else 0.0
-        avg_return_fail = float(np.mean(returns_fail)) if returns_fail else 0.0
-        mean_abs_action = float(np.mean(all_actions)) if all_actions else 0.0
-
-        return avg_return, success_rate, avg_steps, avg_return_success, avg_return_fail, mean_abs_action
+        return EvalResult(
+            avg_return=float(np.mean(returns)),
+            success_rate=len(returns_success) / n,
+            avg_steps=float(np.mean(steps_to_goal)) if steps_to_goal else 0.0,
+            avg_return_success=float(np.mean(returns_success)) if returns_success else 0.0,
+            avg_return_fail=float(np.mean(returns_fail)) if returns_fail else 0.0,
+            mean_abs_action=float(np.mean(all_actions)) if all_actions else 0.0,
+            n=n,
+        )
