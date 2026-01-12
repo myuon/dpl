@@ -21,3 +21,7 @@ from models.sac import (
     hard_update,
     sac_stats_extractor,
 )
+from models.dqn import (
+    DQNAgent,
+    dqn_stats_extractor,
+)

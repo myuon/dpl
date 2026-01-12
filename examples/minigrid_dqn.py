@@ -17,9 +17,8 @@ from gymnasium import ActionWrapper
 import dpl.layers as L
 import dpl.functions as F
 from dpl import Variable
-from dpl.optimizers import Adam
-from dpl.agent import ReplayBuffer, BaseAgent
-from dpl.agent_trainer import AgentTrainer, GymEnvWrapper, EvalResult
+from dpl.agent_trainer import AgentTrainer, EvalResult
+from models.dqn import DQNAgent, dqn_stats_extractor
 
 # %% [markdown]
 # ## 環境仕様
@@ -71,178 +70,6 @@ class QNet(L.Layer):
     def forward(self, *xs: Variable) -> Variable:
         (x,) = xs
         return self.net(x)
-
-
-# %%
-class DQNAgent(BaseAgent):
-    """Double DQN Agent for MiniGrid
-
-    - Experience Replay
-    - Target Network with soft update
-    - Double DQN: action選択はqnet、Q値評価はtarget_qnetで行う
-    - epsilon-greedy探索
-    """
-
-    def __init__(
-        self,
-        state_size: int,  # フラット化した状態サイズ
-        action_size: int = 3,  # left, right, forward for Empty environments
-        gamma: float = 0.99,
-        epsilon: float = 1.0,
-        epsilon_min: float = 0.05,
-        epsilon_decay: float = 0.995,
-        lr: float = 1e-3,
-        batch_size: int = 64,
-        buffer_size: int = 10000,
-        tau: float = 0.005,
-        hidden_size: int = 128,
-        warmup_steps: int = 500,
-    ):
-        self.state_size = state_size
-        self.action_size = action_size
-        self.gamma = gamma
-        self.epsilon = epsilon
-        self.epsilon_min = epsilon_min
-        self.epsilon_decay = epsilon_decay
-        self.batch_size = batch_size
-        self.tau = tau
-        self.warmup_steps = warmup_steps
-
-        # Q-Network (MLP)
-        self.qnet = QNet(state_size, action_size, hidden_size)
-        self.target_qnet = QNet(state_size, action_size, hidden_size)
-        # ダミー入力で重みを初期化
-        dummy_input = Variable(np.zeros((1, state_size), dtype=np.float32))
-        self.qnet(dummy_input)
-        self.target_qnet(dummy_input)
-
-        # Target networkを初期化
-        self._hard_update_target()
-
-        # Optimizer
-        self.optimizer = Adam(lr=lr).setup(self.qnet)
-
-        # Replay Buffer
-        self.buffer = ReplayBuffer(buffer_size)
-
-        # 学習ステップカウンタ
-        self.learn_step = 0
-
-        # モニタリング用
-        self.last_loss: float | None = None
-
-    def _soft_update_target(self):
-        """Target networkをsoft update: θ' ← τθ + (1-τ)θ'"""
-        for main_param, target_param in zip(
-            self.qnet.params(), self.target_qnet.params()
-        ):
-            if main_param.data is not None and target_param.data is not None:
-                target_param.data = (
-                    self.tau * main_param.data + (1 - self.tau) * target_param.data
-                )
-
-    def _hard_update_target(self):
-        """Target networkをメインnetworkで完全に同期"""
-        for main_param, target_param in zip(
-            self.qnet.params(), self.target_qnet.params()
-        ):
-            if main_param.data is not None:
-                target_param.data = main_param.data.copy()
-
-    def _greedy_action(self, state: np.ndarray) -> int:
-        """Q値が最大のアクションを選択"""
-        # state: (state_size,) → (1, state_size)
-        state_v = Variable(state.reshape(1, -1).astype(np.float32))
-        q_values = self.qnet(state_v)
-        return int(np.argmax(q_values.data_required))
-
-    def get_action(self, state: np.ndarray) -> int:
-        """epsilon-greedy戦略でアクションを選択"""
-        if np.random.random() < self.epsilon:
-            return np.random.randint(self.action_size)
-        return self._greedy_action(state)
-
-    def act(self, state: np.ndarray, explore: bool = True) -> int:
-        """アクションを選択"""
-        if explore:
-            return self.get_action(state)
-        return self._greedy_action(state)
-
-    def store(
-        self,
-        state: np.ndarray,
-        action: int,
-        reward: float,
-        next_state: np.ndarray,
-        done: bool,
-        *,
-        terminated=None,
-    ):
-        """経験をバッファに保存"""
-        # (H, W, C) のまま保存（フラット化しない）
-        self.buffer.push(state, action, reward, next_state, done)
-        self.learn_step += 1
-
-    def update(self) -> dict | None:
-        """Replay Bufferからサンプリングして更新"""
-        # Warmup期間中は更新しない
-        if self.learn_step < self.warmup_steps:
-            return None
-
-        # バッファサイズが足りない場合は更新しない
-        if len(self.buffer) < self.batch_size:
-            return None
-
-        # ミニバッチサンプリング
-        states, actions, rewards, next_states, dones = self.buffer.sample(
-            self.batch_size
-        )
-
-        states_v = Variable(states)
-        next_states_v = Variable(next_states)
-        rewards_v = rewards.reshape(-1, 1)
-        dones_v = dones.reshape(-1, 1)
-
-        # Double DQN: action選択はqnet、Q値評価はtarget_qnet
-        # 1. qnetで次状態のbest actionを選択
-        next_q_values = self.qnet(next_states_v).data_required
-        next_actions = np.argmax(next_q_values, axis=1)
-
-        # 2. target_qnetでそのactionのQ値を評価
-        next_q_target = self.target_qnet(next_states_v).data_required
-        next_q = next_q_target[np.arange(self.batch_size), next_actions].reshape(-1, 1)
-
-        # TD target: r + γ * Q_target(s', argmax_a Q(s', a))
-        td_target = rewards_v + self.gamma * next_q * (1 - dones_v)
-
-        # 現在のQ値
-        current_q = self.qnet(states_v)
-        # 選択したアクションのQ値のみ取り出す
-        actions_idx = actions.astype(np.int64)
-        current_q_selected = Variable(
-            current_q.data_required[np.arange(self.batch_size), actions_idx].reshape(
-                -1, 1
-            )
-        )
-
-        # MSE Loss
-        td_target_v = Variable(td_target.astype(np.float32))
-        loss = ((current_q_selected - td_target_v) ** 2).sum() / self.batch_size
-
-        # 勾配計算と更新
-        self.qnet.cleargrads()
-        loss.backward()
-        self.optimizer.update()
-
-        # Target networkのsoft update
-        self._soft_update_target()
-
-        self.last_loss = float(loss.data_required)
-        return {"loss": self.last_loss}
-
-    def decay_epsilon(self):
-        """エピソード終了時にepsilonを減衰"""
-        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
 
 # %% [markdown]
@@ -310,22 +137,6 @@ class MiniGridEnvWrapper:
 
 
 # %%
-def minigrid_stats_extractor(agent) -> str | None:
-    """MiniGrid Agent用の統計抽出関数"""
-    epsilon = getattr(agent, "epsilon", None)
-    loss = getattr(agent, "last_loss", None)
-
-    parts = []
-    if epsilon is not None:
-        parts.append(f"ε={epsilon:.3f}")
-    if loss is not None:
-        parts.append(f"L={loss:.4f}")
-
-    if not parts:
-        return None
-    return ", " + ", ".join(parts)
-
-
 def minigrid_eval_stats_extractor(result: EvalResult) -> str:
     """MiniGrid評価結果の表示"""
     return (
@@ -347,10 +158,24 @@ env = MiniGridEnvWrapper("MiniGrid-Empty-5x5-v0")
 print(f"Observation shape: {env.obs_shape}")
 print()
 
-# DQN エージェント (CNN-based)
+# Q-Network作成
+state_size = env.state_size
+action_size = 3  # left, right, forward（Empty環境用）
+hidden_size = 128
+
+qnet = QNet(state_size, action_size, hidden_size)
+target_qnet = QNet(state_size, action_size, hidden_size)
+
+# ダミー入力で重みを初期化
+dummy_input = Variable(np.zeros((1, state_size), dtype=np.float32))
+qnet(dummy_input)
+target_qnet(dummy_input)
+
+# DQN エージェント
 agent = DQNAgent(
-    state_size=env.state_size,
-    action_size=3,  # left, right, forward（Empty環境用）
+    qnet=qnet,
+    target_qnet=target_qnet,
+    action_size=action_size,
     gamma=0.99,
     epsilon=1.0,
     epsilon_min=0.05,
@@ -359,7 +184,6 @@ agent = DQNAgent(
     batch_size=64,
     buffer_size=10000,
     tau=0.005,
-    hidden_size=128,
     warmup_steps=500,
 )
 
@@ -373,7 +197,7 @@ trainer = AgentTrainer(
     eval_n=10,
     update_every=1,
     log_interval=30,
-    stats_extractor=minigrid_stats_extractor,
+    stats_extractor=dqn_stats_extractor,
     eval_stats_extractor=minigrid_eval_stats_extractor,
 )
 
