@@ -1,6 +1,7 @@
 from typing import Protocol, Any, Callable
 from dataclasses import dataclass
 import numpy as np
+import time
 
 from dpl.agent import Agent
 from dpl.core.utils import ndarray
@@ -118,6 +119,7 @@ class AgentTrainer:
         eval_avg_steps: list[tuple[int, float]] = []
         eval_b_success_rates: list[tuple[int, float]] = []
         total_steps = 0
+        start_time = time.time()
 
         for episode in range(self.num_episodes):
             total_reward, losses, steps = self._run_episode()
@@ -131,7 +133,7 @@ class AgentTrainer:
 
             # ログ出力
             if (episode + 1) % self.log_interval == 0:
-                self._log_progress(episode, total_reward, episode_rewards)
+                self._log_progress(episode, total_reward, episode_rewards, start_time)
 
             # 評価
             if (episode + 1) % self.eval_interval == 0:
@@ -213,14 +215,38 @@ class AgentTrainer:
 
         return total_reward, losses, steps
 
+    def _format_time(self, seconds: float) -> str:
+        """秒数を読みやすい形式に変換"""
+        if seconds < 60:
+            return f"{seconds:.0f}s"
+        elif seconds < 3600:
+            m, s = divmod(int(seconds), 60)
+            return f"{m}m{s:02d}s"
+        else:
+            h, remainder = divmod(int(seconds), 3600)
+            m, s = divmod(remainder, 60)
+            return f"{h}h{m:02d}m"
+
     def _log_progress(
         self,
         episode: int,
         total_reward: float,
         episode_rewards: list[float],
+        start_time: float,
     ):
         """進捗をログ出力"""
         avg_reward = np.mean(episode_rewards[-self.log_interval :])
+
+        # 残り時間の計算
+        elapsed = time.time() - start_time
+        progress = (episode + 1) / self.num_episodes
+        if progress > 0:
+            estimated_total = elapsed / progress
+            remaining = estimated_total - elapsed
+        else:
+            remaining = 0
+
+        eta_str = f"ETA={self._format_time(remaining)}"
 
         # 外部から注入された統計抽出関数を使用
         extra_stats = ""
@@ -231,7 +257,7 @@ class AgentTrainer:
 
         print(
             f"Episode {episode + 1}: Reward = {total_reward:.2f}, "
-            f"Avg({self.log_interval}) = {avg_reward:.2f}{extra_stats}"
+            f"Avg({self.log_interval}) = {avg_reward:.2f}{extra_stats}, {eta_str}"
         )
 
     def evaluate(

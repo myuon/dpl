@@ -25,3 +25,9 @@ from models.dqn import (
     DQNAgent,
     dqn_stats_extractor,
 )
+from models.drqn import (
+    DRQNNet,
+    DRQNAgent,
+    EpisodeReplay,
+    drqn_stats_extractor,
+)
