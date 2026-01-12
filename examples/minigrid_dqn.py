@@ -12,6 +12,7 @@ from typing import Callable
 
 import minigrid
 from minigrid.wrappers import FullyObsWrapper
+from gymnasium import ActionWrapper
 
 import dpl.layers as L
 import dpl.functions as F
@@ -249,6 +250,22 @@ class DQNAgent(BaseAgent):
 
 
 # %%
+class SimpleActionWrapper(ActionWrapper):
+    """Empty環境用にアクション空間を3に制限するラッパー
+
+    MiniGridは7アクション (left, right, forward, pickup, drop, toggle, done) だが
+    Empty環境では left, right, forward のみ使用
+    """
+
+    def __init__(self, env):
+        super().__init__(env)
+        self.action_space = gym.spaces.Discrete(3)
+
+    def action(self, action):
+        # 0:left, 1:right, 2:forward をそのまま渡す
+        return action
+
+
 class MiniGridEnvWrapper:
     """MiniGrid用のラッパー
 
@@ -258,7 +275,7 @@ class MiniGridEnvWrapper:
 
     def __init__(self, env_name: str = "MiniGrid-Empty-5x5-v0"):
         self.base_env = gym.make(env_name)
-        self.env = FullyObsWrapper(self.base_env)
+        self.env = SimpleActionWrapper(FullyObsWrapper(self.base_env))
         # image shape + direction (4方向 one-hot)
         img_shape = self.env.observation_space["image"].shape
         assert img_shape is not None
@@ -422,8 +439,8 @@ from matplotlib import animation
 from IPython.display import HTML
 
 # フレームを収集
-render_env = FullyObsWrapper(
-    gym.make("MiniGrid-Empty-5x5-v0", render_mode="rgb_array")
+render_env = SimpleActionWrapper(
+    FullyObsWrapper(gym.make("MiniGrid-Empty-5x5-v0", render_mode="rgb_array"))
 )
 frames = []
 action_names = ["left", "right", "forward"]
