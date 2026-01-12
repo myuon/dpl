@@ -73,7 +73,8 @@ def _im2col_array(
     img = xp.pad(x_data, [(0, 0), (0, 0), (pad, pad), (pad, pad)], "constant")
 
     if isinstance(x_data, jnp.ndarray):
-        return _im2col_array_jax(img, filter_h, filter_w, stride, pad)
+        # imgは既にパディング済みなのでpad=0を渡す
+        return _im2col_array_jax(img, filter_h, filter_w, stride, 0)
     else:
         return _im2col_array_cpu(
             img, N, C, filter_h, filter_w, out_h, out_w, stride, xp

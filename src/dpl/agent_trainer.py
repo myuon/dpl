@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from dpl.agent import Agent
+from dpl.core.utils import ndarray
 
 # 統計抽出関数の型: Agent を受け取り、ログに追加する文字列を返す
 StatsExtractor = Callable[[Agent], str | None]
@@ -28,8 +29,8 @@ EvalStatsExtractor = Callable[[EvalResult], str]
 class Env(Protocol):
     """環境のプロトコル（離散/連続行動空間対応）"""
 
-    def reset(self) -> np.ndarray: ...
-    def step(self, action: int | np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict]: ...
+    def reset(self) -> ndarray: ...
+    def step(self, action: int | ndarray) -> tuple[ndarray, float, bool, bool, dict]: ...
 
 
 class GymEnvWrapper:

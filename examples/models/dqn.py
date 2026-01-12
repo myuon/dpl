@@ -5,6 +5,7 @@ import numpy as np
 import dpl.layers as L
 import dpl.functions as F
 from dpl import Variable
+from dpl.core import as_jax
 from dpl.optimizers import Adam
 from dpl.agent import ReplayBuffer, BaseAgent
 
@@ -86,7 +87,8 @@ class DQNAgent(BaseAgent):
 
     def _greedy_action(self, state: np.ndarray) -> int:
         """Q値が最大のアクションを選択"""
-        state_v = Variable(state.reshape(1, -1).astype(np.float32))
+        # バッチ次元を追加 (MLP: 1D→2D, CNN: 3D→4D)
+        state_v = Variable(state[np.newaxis, ...].astype(np.float32))
         q_values = self.qnet(state_v)
         return int(np.argmax(q_values.data_required))
 
@@ -130,8 +132,9 @@ class DQNAgent(BaseAgent):
             self.batch_size
         )
 
-        states_v = Variable(states)
-        next_states_v = Variable(next_states)
+        # GPU計算のためJAX配列に変換
+        states_v = Variable(as_jax(states))
+        next_states_v = Variable(as_jax(next_states))
 
         # 次状態のQ値を計算 (勾配不要)
         next_q_values = self.qnet(next_states_v).data_required
@@ -154,11 +157,11 @@ class DQNAgent(BaseAgent):
         # one-hotマスクでアクションのQ値を取り出す（勾配を維持）
         action_masks = np.eye(self.action_size)[actions.astype(np.int64)]
         current_q = F.sum(
-            q_values * Variable(action_masks.astype(np.float32)), axis=1
+            q_values * Variable(as_jax(action_masks.astype(np.float32))), axis=1
         )  # (batch,)
 
         # MSE Loss
-        targets_v = Variable(targets.astype(np.float32))
+        targets_v = Variable(as_jax(targets.astype(np.float32)))
         loss = F.mean_squared_error(current_q, targets_v)
 
         # 勾配計算と更新
