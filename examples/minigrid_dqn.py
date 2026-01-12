@@ -146,8 +146,8 @@ def minigrid_eval_stats_extractor(result: EvalResult) -> str:
 # ## 実行：DQN
 
 # %%
-ENV_NAME = "MiniGrid-SimpleCrossingS9N1-v0"
-FULLY_OBS = True
+ENV_NAME = "MiniGrid-Empty-8x8-v0"
+FULLY_OBS = False
 
 print("=== MiniGrid DQN ===")
 print(f"Env: {ENV_NAME}")
@@ -192,7 +192,6 @@ agent = DQNAgent(
 # AgentTrainerで学習
 trainer = AgentTrainer(
     env=env,
-    eval_env=eval_env,
     agent=agent,
     num_episodes=300,
     eval_interval=30,
