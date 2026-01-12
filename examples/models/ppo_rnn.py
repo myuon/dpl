@@ -49,13 +49,20 @@ class EpisodeRolloutBuffer:
     - GAEはエピソード単位で計算
     - シーケンスを切らずにミニバッチ化
     - step数ベースで更新タイミングを判定
+    - n_envs > 1 の場合は並列環境からのデータを管理
     """
 
-    def __init__(self, max_episodes: int = 100):
+    def __init__(self, max_episodes: int = 100, n_envs: int = 1):
         self.max_episodes = max_episodes
+        self.n_envs = n_envs
         self.episodes: list[list[PPOTransition]] = []
-        self.current: list[PPOTransition] = []
         self._total_steps = 0  # 完了エピソードの総step数
+
+        # 単一環境用
+        self.current: list[PPOTransition] = []
+
+        # 並列環境用: 各環境ごとの現在エピソード
+        self.current_parallel: list[list[PPOTransition]] = [[] for _ in range(n_envs)]
 
         # GAE計算後のデータ
         self.computed_data: list[dict] = []
@@ -70,24 +77,79 @@ class EpisodeRolloutBuffer:
         return self._total_steps
 
     def start_episode(self):
-        """新しいエピソードを開始"""
+        """新しいエピソードを開始（単一環境用）"""
         self.current = []
 
     def add(self, obs: np.ndarray, action: int, reward: float, done: bool,
             log_prob: float, value: float):
-        """遷移を現在のエピソードに追加"""
+        """遷移を現在のエピソードに追加（単一環境用）"""
         self.current.append(PPOTransition(obs, action, reward, done, log_prob, value))
 
-    def end_episode(self):
-        """現在のエピソードを完了してバッファに追加"""
-        if len(self.current) > 0:
-            self._total_steps += len(self.current)
-            self.episodes.append(self.current)
-            if len(self.episodes) > self.max_episodes:
-                # 古いエピソードを削除する場合はstep数も減らす
-                removed = self.episodes.pop(0)
-                self._total_steps -= len(removed)
-        self.current = []
+    def end_episode(self, env_id: int | None = None):
+        """現在のエピソードを完了してバッファに追加
+
+        Args:
+            env_id: 並列環境の場合、終了する環境ID
+                    None の場合は単一環境モード
+        """
+        if env_id is None:
+            # 単一環境モード
+            if len(self.current) > 0:
+                self._total_steps += len(self.current)
+                self.episodes.append(self.current)
+                if len(self.episodes) > self.max_episodes:
+                    removed = self.episodes.pop(0)
+                    self._total_steps -= len(removed)
+            self.current = []
+        else:
+            # 並列環境モード
+            if len(self.current_parallel[env_id]) > 0:
+                self._total_steps += len(self.current_parallel[env_id])
+                self.episodes.append(self.current_parallel[env_id])
+                if len(self.episodes) > self.max_episodes:
+                    removed = self.episodes.pop(0)
+                    self._total_steps -= len(removed)
+            self.current_parallel[env_id] = []
+
+    def add_parallel(
+        self,
+        obs: np.ndarray,
+        actions: np.ndarray,
+        rewards: np.ndarray,
+        dones: np.ndarray,
+        log_probs: np.ndarray,
+        values: np.ndarray,
+    ):
+        """並列環境からのデータを追加
+
+        Args:
+            obs: (n_envs, obs_dim)
+            actions: (n_envs,)
+            rewards: (n_envs,)
+            dones: (n_envs,)
+            log_probs: (n_envs,)
+            values: (n_envs,)
+        """
+        for i in range(self.n_envs):
+            self.current_parallel[i].append(PPOTransition(
+                obs=obs[i],
+                action=int(actions[i]),
+                reward=float(rewards[i]),
+                done=bool(dones[i]),
+                log_prob=float(log_probs[i]),
+                value=float(values[i]),
+            ))
+
+    def finalize_rollout(self):
+        """rollout終了時に未完了エピソードも保存（途中打ち切り）
+
+        並列環境でrollout_lenステップ収集後に呼ぶ
+        """
+        for i in range(self.n_envs):
+            if len(self.current_parallel[i]) > 0:
+                self._total_steps += len(self.current_parallel[i])
+                self.episodes.append(self.current_parallel[i])
+                self.current_parallel[i] = []
 
     def compute_gae_all(self, gamma: float, gae_lambda: float):
         """全エピソードのGAEを計算
@@ -209,6 +271,7 @@ class EpisodeRolloutBuffer:
         """バッファをクリア（update後に呼ぶ）"""
         self.episodes = []
         self.current = []
+        self.current_parallel = [[] for _ in range(self.n_envs)]
         self.computed_data = []
         self._total_steps = 0
 
@@ -220,13 +283,15 @@ class RecurrentActorCritic(L.Layer):
         obs → MLP → feature → LSTM → h → (policy_logits, value)
 
     DRQNNetを参考に、stateful/statelessの切り替えに対応
+    n_envs > 1 の場合は並列環境用のLSTM状態管理を行う
     """
 
-    def __init__(self, obs_dim: int, action_dim: int, hidden_size: int = 64):
+    def __init__(self, obs_dim: int, action_dim: int, hidden_size: int = 64, n_envs: int = 1):
         super().__init__()
         self.obs_dim = obs_dim
         self.action_dim = action_dim
         self.hidden_size = hidden_size
+        self.n_envs = n_envs
 
         # Feature extractor (MLP)
         self.feature = L.Linear(hidden_size, in_size=obs_dim)
@@ -238,9 +303,33 @@ class RecurrentActorCritic(L.Layer):
         self.actor_head = L.Linear(action_dim, in_size=hidden_size)
         self.critic_head = L.Linear(1, in_size=hidden_size)
 
-    def reset_state(self):
-        """LSTMの内部状態をリセット"""
-        self.lstm.reset_state()
+        # 並列環境用のLSTM状態（n_envs > 1の場合に使用）
+        self._h_states: np.ndarray | None = None  # (n_envs, hidden_size)
+        self._c_states: np.ndarray | None = None  # (n_envs, hidden_size)
+
+    def reset_state(self, env_id: int | None = None):
+        """LSTMの内部状態をリセット
+
+        Args:
+            env_id: 特定環境のみリセットする場合に指定
+                    None の場合は全環境リセット
+        """
+        if self.n_envs == 1:
+            # 単一環境: 従来の動作
+            self.lstm.reset_state()
+        else:
+            # 並列環境
+            if env_id is None:
+                # 全環境リセット
+                self._h_states = np.zeros((self.n_envs, self.hidden_size), dtype=np.float32)
+                self._c_states = np.zeros((self.n_envs, self.hidden_size), dtype=np.float32)
+            else:
+                # 特定環境のみリセット
+                if self._h_states is None:
+                    self._h_states = np.zeros((self.n_envs, self.hidden_size), dtype=np.float32)
+                    self._c_states = np.zeros((self.n_envs, self.hidden_size), dtype=np.float32)
+                self._h_states[env_id] = 0
+                self._c_states[env_id] = 0
 
     def forward(self, *inputs: Variable) -> tuple[Variable, Variable]:
         """バッチシーケンス処理（学習用）
@@ -289,7 +378,7 @@ class RecurrentActorCritic(L.Layer):
         return logits, values
 
     def step(self, obs: np.ndarray) -> tuple[np.ndarray, float]:
-        """1ステップ推論（stateful=True）
+        """1ステップ推論（stateful=True）- 単一環境用
 
         Args:
             obs: (obs_dim,) の観測
@@ -302,6 +391,36 @@ class RecurrentActorCritic(L.Layer):
         x = Variable(obs.astype(np.float32)[None, None, :])
         logits, value = self._forward_impl(x, stateful=True)
         return logits.data_required[0, 0], float(value.data_required[0, 0, 0])
+
+    def steps(self, obs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """並列ステップ推論（n_envs環境同時）
+
+        Args:
+            obs: (n_envs, obs_dim) の観測
+
+        Returns:
+            logits: (n_envs, action_dim) のlogits
+            values: (n_envs,) のvalue
+        """
+        assert self.n_envs > 1, "steps() is for parallel envs (n_envs > 1)"
+
+        # 状態が未初期化なら初期化
+        if self._h_states is None:
+            self.reset_state()
+
+        # LSTM状態を設定
+        self.lstm.lstm.h = Variable(self._h_states.astype(np.float32))
+        self.lstm.lstm.c = Variable(self._c_states.astype(np.float32))
+
+        # (n_envs, obs_dim) → (n_envs, 1, obs_dim)
+        x = Variable(obs[:, None, :].astype(np.float32))
+        logits, values = self._forward_impl(x, stateful=True)
+
+        # 状態を保存
+        self._h_states = self.lstm.lstm.h.data.astype(np.float32)
+        self._c_states = self.lstm.lstm.c.data.astype(np.float32)
+
+        return logits.data_required[:, 0, :], values.data_required[:, 0, 0]
 
     def evaluate_sequences(
         self, obs: Variable, actions: np.ndarray
@@ -354,6 +473,7 @@ class PPORNNAgent(BaseAgent):
     - LSTM state management (reset_state, start/end_episode)
     - Sequence-based minibatching with burn-in
     - PPO clipped objective
+    - n_envs > 1 で並列環境対応
     """
 
     def __init__(
@@ -375,6 +495,8 @@ class PPORNNAgent(BaseAgent):
         max_episodes: int = 100,
         max_grad_norm: float = 0.5,
         target_kl: float | None = None,  # KL超過で早期停止
+        n_envs: int = 1,  # 並列環境数
+        rollout_len: int = 256,  # 並列環境でのrollout長
     ):
         self.actor_critic = actor_critic
         self.action_size = action_size
@@ -391,13 +513,19 @@ class PPORNNAgent(BaseAgent):
         self.rollout_steps = rollout_steps
         self.max_grad_norm = max_grad_norm
         self.target_kl = target_kl
+        self.n_envs = n_envs
+        self.rollout_len = rollout_len
 
         self.optimizer = Adam(lr=lr).setup(self.actor_critic)
-        self.buffer = EpisodeRolloutBuffer(max_episodes=max_episodes)
+        self.buffer = EpisodeRolloutBuffer(max_episodes=max_episodes, n_envs=n_envs)
 
-        # 内部状態
+        # 内部状態（単一環境用）
         self._last_log_prob = 0.0
         self._last_value = 0.0
+
+        # 並列環境用
+        self._last_log_probs: np.ndarray = np.zeros(n_envs)
+        self._last_values: np.ndarray = np.zeros(n_envs)
 
         # モニタリング用
         self.last_policy_loss: float | None = None
@@ -406,9 +534,14 @@ class PPORNNAgent(BaseAgent):
         self.last_approx_kl: float | None = None
         self.last_total_steps: int | None = None  # 更新時のstep数
 
-    def reset_state(self):
-        """LSTM状態をリセット（エピソード開始時に呼び出す）"""
-        self.actor_critic.reset_state()
+    def reset_state(self, env_id: int | None = None):
+        """LSTM状態をリセット
+
+        Args:
+            env_id: 並列環境の場合、特定環境のみリセット
+                    None の場合は全環境リセット
+        """
+        self.actor_critic.reset_state(env_id)
 
     def start_episode(self):
         """エピソード開始時に呼び出す"""
@@ -452,11 +585,113 @@ class PPORNNAgent(BaseAgent):
         *,
         terminated=None,
     ):
-        """経験をバッファに保存"""
+        """経験をバッファに保存（単一環境用）"""
         self.buffer.add(
             state, action, reward, done,
             self._last_log_prob, self._last_value
         )
+
+    # ============ 並列環境用メソッド ============
+
+    def get_actions(self, states: np.ndarray) -> np.ndarray:
+        """並列行動選択
+
+        Args:
+            states: (n_envs, obs_dim)
+
+        Returns:
+            actions: (n_envs,)
+        """
+        logits, values = self.actor_critic.steps(states)  # (n_envs, action_dim), (n_envs,)
+
+        # 各環境で独立にサンプリング
+        # Softmax
+        logits_max = np.max(logits, axis=1, keepdims=True)
+        exp_logits = np.exp(logits - logits_max)
+        probs = exp_logits / np.sum(exp_logits, axis=1, keepdims=True)  # (n_envs, action_dim)
+
+        actions = np.array([
+            np.random.choice(self.action_size, p=p) for p in probs
+        ])
+
+        # log_probを保存
+        self._last_log_probs = np.log(probs[np.arange(self.n_envs), actions] + 1e-8)
+        self._last_values = values
+
+        return actions
+
+    def store_parallel(
+        self,
+        states: np.ndarray,
+        actions: np.ndarray,
+        rewards: np.ndarray,
+        next_states: np.ndarray,
+        dones: np.ndarray,
+        terminateds: np.ndarray,
+    ):
+        """並列データ保存
+
+        Args:
+            states: (n_envs, obs_dim)
+            actions: (n_envs,)
+            rewards: (n_envs,)
+            next_states: (n_envs, obs_dim) - 未使用だが互換性のため
+            dones: (n_envs,)
+            terminateds: (n_envs,) - エピソード終了判定用
+        """
+        self.buffer.add_parallel(
+            obs=states,
+            actions=actions,
+            rewards=rewards,
+            dones=dones,
+            log_probs=self._last_log_probs,
+            values=self._last_values,
+        )
+
+        # エピソード終了処理
+        for i in range(self.n_envs):
+            if dones[i]:
+                self.buffer.end_episode(env_id=i)
+
+    def collect_rollout(self, env) -> tuple[int, list[float]]:
+        """n_envs × rollout_len ステップのデータを収集
+
+        Args:
+            env: VectorEnvWrapper
+
+        Returns:
+            total_steps: 収集したステップ数
+            episode_rewards: 完了したエピソードのリワードリスト
+        """
+        obs = env.reset()  # (n_envs, obs_dim)
+        self.reset_state()  # 全環境のLSTM状態リセット
+
+        episode_rewards: list[float] = []
+        current_rewards = np.zeros(self.n_envs)
+
+        for step in range(self.rollout_len):
+            actions = self.get_actions(obs)  # (n_envs,)
+            next_obs, rewards, terminateds, truncateds = env.step(actions)
+            dones = terminateds | truncateds
+
+            self.store_parallel(obs, actions, rewards, next_obs, dones, terminateds)
+
+            current_rewards += rewards
+
+            # done環境のリセット
+            for i in range(self.n_envs):
+                if dones[i]:
+                    episode_rewards.append(float(current_rewards[i]))
+                    current_rewards[i] = 0.0
+                    obs[i] = env.reset_single(i)
+                    self.reset_state(env_id=i)
+                else:
+                    obs[i] = next_obs[i]
+
+        # 未完了エピソードをfinalize
+        self.buffer.finalize_rollout()
+
+        return self.n_envs * self.rollout_len, episode_rewards
 
     def update(self) -> dict | None:
         """step数が十分たまったら更新（episode数ではなくstep数ベース）"""
