@@ -1,0 +1,597 @@
+"""PPO + RNN (Recurrent PPO) Agent implementation.
+
+PPO with LSTM for partial observation environments:
+- EpisodeRolloutBuffer: Episode-based trajectory storage
+- RecurrentActorCritic: MLP → LSTM → Actor/Critic heads
+- PPORNNAgent: DRQN-style state management + PPO update logic
+
+Key differences from vanilla PPO:
+- Episode boundary handling (hidden state reset)
+- Sequence-based minibatching (no random shuffling that breaks temporal structure)
+- Burn-in for LSTM warm-up
+"""
+
+from dataclasses import dataclass
+import numpy as np
+
+import dpl.layers as L
+import dpl.functions as F
+from dpl import Variable
+from dpl.optimizers import Adam
+from dpl.agent import BaseAgent
+
+
+def log_softmax(logits: Variable, axis: int = 1) -> Variable:
+    """log(softmax(x)) を数値的に安定に計算"""
+    x_max = F.max(logits, axis=axis, keepdims=True)
+    x_shifted = logits - x_max
+    log_sum_exp = F.log(F.sum(F.exp(x_shifted), axis=axis, keepdims=True))
+    return x_shifted - log_sum_exp
+
+
+@dataclass
+class PPOTransition:
+    """1ステップの遷移データ（PPO用）"""
+    obs: np.ndarray
+    action: int
+    reward: float
+    done: bool
+    log_prob: float
+    value: float
+
+
+class EpisodeRolloutBuffer:
+    """エピソード単位でtrajectoryを保存（RNN用）
+
+    DRQNのEpisodeReplayを参考に、PPO用のデータ（log_prob, value）も保存
+
+    - エピソード境界を保持
+    - GAEはエピソード単位で計算
+    - シーケンスを切らずにミニバッチ化
+    """
+
+    def __init__(self, max_episodes: int = 100):
+        self.max_episodes = max_episodes
+        self.episodes: list[list[PPOTransition]] = []
+        self.current: list[PPOTransition] = []
+
+        # GAE計算後のデータ
+        self.computed_data: list[dict] = []
+
+    def __len__(self) -> int:
+        """完了したエピソード数を返す"""
+        return len(self.episodes)
+
+    def start_episode(self):
+        """新しいエピソードを開始"""
+        self.current = []
+
+    def add(self, obs: np.ndarray, action: int, reward: float, done: bool,
+            log_prob: float, value: float):
+        """遷移を現在のエピソードに追加"""
+        self.current.append(PPOTransition(obs, action, reward, done, log_prob, value))
+
+    def end_episode(self):
+        """現在のエピソードを完了してバッファに追加"""
+        if len(self.current) > 0:
+            self.episodes.append(self.current)
+            if len(self.episodes) > self.max_episodes:
+                self.episodes.pop(0)
+        self.current = []
+
+    def compute_gae_all(self, gamma: float, gae_lambda: float):
+        """全エピソードのGAEを計算
+
+        各エピソードの最後はdone=Trueなので、last_value=0でブートストラップ
+        """
+        self.computed_data = []
+
+        for ep in self.episodes:
+            n = len(ep)
+            if n == 0:
+                continue
+
+            obs = np.array([t.obs for t in ep], dtype=np.float32)
+            actions = np.array([t.action for t in ep], dtype=np.int64)
+            rewards = np.array([t.reward for t in ep], dtype=np.float32)
+            dones = np.array([t.done for t in ep], dtype=np.float32)
+            log_probs = np.array([t.log_prob for t in ep], dtype=np.float32)
+            values = np.array([t.value for t in ep], dtype=np.float32)
+
+            # GAE計算
+            advantages = np.zeros(n, dtype=np.float32)
+            gae = 0.0
+
+            for t in reversed(range(n)):
+                if t == n - 1:
+                    next_value = 0.0  # エピソード終了
+                else:
+                    next_value = values[t + 1]
+
+                next_non_terminal = 1.0 - dones[t]
+                delta = rewards[t] + gamma * next_value * next_non_terminal - values[t]
+                gae = delta + gamma * gae_lambda * next_non_terminal * gae
+                advantages[t] = gae
+
+            returns = advantages + values
+
+            self.computed_data.append({
+                "obs": obs,
+                "actions": actions,
+                "log_probs": log_probs,
+                "advantages": advantages,
+                "returns": returns,
+            })
+
+    def can_sample(self, batch_size: int, seq_len: int, burn_in: int) -> bool:
+        """サンプリング可能かどうかを判定"""
+        need = seq_len + burn_in
+        long_eps = [d for d in self.computed_data if len(d["obs"]) >= need]
+        return len(long_eps) >= batch_size
+
+    def get_sequence_batches(self, batch_size: int, seq_len: int, burn_in: int):
+        """シーケンス単位でミニバッチを返す
+
+        DRQNのsample_sequencesを参考に、PPO用のデータを返す
+
+        Yields:
+            obs: (B, L, obs_dim)
+            actions: (B, L)
+            log_probs: (B, L)
+            advantages: (B, L)
+            returns: (B, L)
+            mask: (B, L) - burn_in部分は0
+        """
+        L = burn_in + seq_len
+        candidates = [d for d in self.computed_data if len(d["obs"]) >= L]
+
+        if len(candidates) < batch_size:
+            return
+
+        obs_dim = candidates[0]["obs"].shape[1]
+
+        # 全候補からシャッフルしてバッチを作成
+        np.random.shuffle(candidates)
+
+        for batch_start in range(0, len(candidates), batch_size):
+            batch_candidates = candidates[batch_start:batch_start + batch_size]
+            if len(batch_candidates) < batch_size:
+                break
+
+            B = len(batch_candidates)
+            obs = np.zeros((B, L, obs_dim), np.float32)
+            actions = np.zeros((B, L), np.int64)
+            log_probs = np.zeros((B, L), np.float32)
+            advantages = np.zeros((B, L), np.float32)
+            returns = np.zeros((B, L), np.float32)
+            mask = np.zeros((B, L), np.float32)
+
+            for b, data in enumerate(batch_candidates):
+                ep_len = len(data["obs"])
+                start = np.random.randint(0, ep_len - L + 1)
+
+                obs[b] = data["obs"][start:start + L]
+                actions[b] = data["actions"][start:start + L]
+                log_probs[b] = data["log_probs"][start:start + L]
+                advantages[b] = data["advantages"][start:start + L]
+                returns[b] = data["returns"][start:start + L]
+
+                # burn_in部分を除外
+                mask[b, burn_in:] = 1.0
+
+            yield obs, actions, log_probs, advantages, returns, mask
+
+    def clear(self):
+        """バッファをクリア（update後に呼ぶ）"""
+        self.episodes = []
+        self.current = []
+        self.computed_data = []
+
+
+class RecurrentActorCritic(L.Layer):
+    """LSTM付きActor-Critic
+
+    Architecture:
+        obs → MLP → feature → LSTM → h → (policy_logits, value)
+
+    DRQNNetを参考に、stateful/statelessの切り替えに対応
+    """
+
+    def __init__(self, obs_dim: int, action_dim: int, hidden_size: int = 64):
+        super().__init__()
+        self.obs_dim = obs_dim
+        self.action_dim = action_dim
+        self.hidden_size = hidden_size
+
+        # Feature extractor (MLP)
+        self.feature = L.Linear(hidden_size, in_size=obs_dim)
+
+        # LSTM
+        self.lstm = L.TimeLSTM(hidden_size, in_size=hidden_size, stateful=True)
+
+        # Actor/Critic heads
+        self.actor_head = L.Linear(action_dim, in_size=hidden_size)
+        self.critic_head = L.Linear(1, in_size=hidden_size)
+
+    def reset_state(self):
+        """LSTMの内部状態をリセット"""
+        self.lstm.reset_state()
+
+    def forward(self, *inputs: Variable) -> tuple[Variable, Variable]:
+        """バッチシーケンス処理（学習用）
+
+        Args:
+            inputs[0]: (B, T, obs_dim) の観測シーケンス
+
+        Returns:
+            logits: (B, T, action_dim)
+            values: (B, T, 1)
+        """
+        x = inputs[0]
+        return self._forward_impl(x, stateful=False)
+
+    def _forward_impl(self, x: Variable, stateful: bool) -> tuple[Variable, Variable]:
+        """forward実装の共通部分"""
+        self.lstm.stateful = stateful
+        if not stateful:
+            self.lstm.reset_state()
+
+        B, T, D = x.shape
+
+        # (B*T, D) にreshape
+        x2 = F.reshape(x, (B * T, D))
+
+        # Feature extraction
+        h2 = F.relu(self.feature(x2))
+
+        # (B, T, hidden) にreshape
+        h = F.reshape(h2, (B, T, self.hidden_size))
+
+        # TimeLSTM: (B, T, hidden) → (B, T, hidden)
+        hs = self.lstm(h)
+
+        # (B*T, hidden) にreshape
+        hs2 = F.reshape(hs, (B * T, self.hidden_size))
+
+        # Actor/Critic heads
+        logits2 = self.actor_head(hs2)
+        values2 = self.critic_head(hs2)
+
+        # Reshape to (B, T, dim)
+        logits = F.reshape(logits2, (B, T, self.action_dim))
+        values = F.reshape(values2, (B, T, 1))
+
+        return logits, values
+
+    def step(self, obs: np.ndarray) -> tuple[np.ndarray, float]:
+        """1ステップ推論（stateful=True）
+
+        Args:
+            obs: (obs_dim,) の観測
+
+        Returns:
+            logits: (action_dim,) のlogits
+            value: スカラー値
+        """
+        # (1, 1, obs_dim) に変換
+        x = Variable(obs.astype(np.float32)[None, None, :])
+        logits, value = self._forward_impl(x, stateful=True)
+        return logits.data_required[0, 0], float(value.data_required[0, 0, 0])
+
+    def evaluate_sequences(
+        self, obs: Variable, actions: np.ndarray
+    ) -> tuple[Variable, Variable, Variable]:
+        """シーケンスバッチ評価
+
+        Args:
+            obs: (B, T, obs_dim) の観測シーケンス
+            actions: (B, T) のアクション
+
+        Returns:
+            log_probs: (B, T)
+            entropy: (B, T)
+            values: (B, T)
+        """
+        logits, values = self(obs)  # stateful=False
+
+        B, T, A = logits.shape
+
+        # Reshape for softmax: (B*T, A)
+        logits_2d = F.reshape(logits, (B * T, A))
+        probs_2d = F.softmax(logits_2d)
+        log_probs_2d = log_softmax(logits_2d)
+
+        # 選択されたアクションのlog_prob
+        actions_flat = actions.reshape(-1)
+        action_masks = np.eye(A)[actions_flat.astype(int)]
+        action_log_probs_2d = F.sum(
+            log_probs_2d * Variable(action_masks.astype(np.float32)), axis=1
+        )
+
+        # Entropy: -Σ p log p
+        entropy_2d = -F.sum(probs_2d * log_probs_2d, axis=1)
+
+        # Reshape back to (B, T)
+        log_probs = F.reshape(action_log_probs_2d, (B, T))
+        entropy = F.reshape(entropy_2d, (B, T))
+        values_flat = F.reshape(values, (B, T))
+
+        return log_probs, entropy, values_flat
+
+
+class PPORNNAgent(BaseAgent):
+    """PPO + RNN Agent
+
+    DRQNのRNN管理パターン + PPOの更新ロジック
+
+    Key features:
+    - Episode-based buffer (EpisodeRolloutBuffer)
+    - LSTM state management (reset_state, start/end_episode)
+    - Sequence-based minibatching with burn-in
+    - PPO clipped objective
+    """
+
+    def __init__(
+        self,
+        actor_critic: RecurrentActorCritic,
+        action_size: int,
+        obs_dim: int,
+        gamma: float = 0.99,
+        gae_lambda: float = 0.95,
+        clip_eps: float = 0.2,
+        entropy_coef: float = 0.02,  # RNN用に高め
+        value_coef: float = 0.5,
+        lr: float = 3e-4,
+        n_epochs: int = 4,
+        seq_len: int = 16,
+        burn_in: int = 4,
+        batch_size: int = 16,
+        min_episodes: int = 10,
+        max_episodes: int = 100,
+        max_grad_norm: float = 0.5,
+    ):
+        self.actor_critic = actor_critic
+        self.action_size = action_size
+        self.obs_dim = obs_dim
+        self.gamma = gamma
+        self.gae_lambda = gae_lambda
+        self.clip_eps = clip_eps
+        self.entropy_coef = entropy_coef
+        self.value_coef = value_coef
+        self.n_epochs = n_epochs
+        self.seq_len = seq_len
+        self.burn_in = burn_in
+        self.batch_size = batch_size
+        self.min_episodes = min_episodes
+        self.max_grad_norm = max_grad_norm
+
+        self.optimizer = Adam(lr=lr).setup(self.actor_critic)
+        self.buffer = EpisodeRolloutBuffer(max_episodes=max_episodes)
+
+        # 内部状態
+        self._last_log_prob = 0.0
+        self._last_value = 0.0
+
+        # モニタリング用
+        self.last_policy_loss: float | None = None
+        self.last_value_loss: float | None = None
+        self.last_entropy: float | None = None
+
+    def reset_state(self):
+        """LSTM状態をリセット（エピソード開始時に呼び出す）"""
+        self.actor_critic.reset_state()
+
+    def start_episode(self):
+        """エピソード開始時に呼び出す"""
+        self.buffer.start_episode()
+
+    def end_episode(self):
+        """エピソード終了時に呼び出す"""
+        self.buffer.end_episode()
+
+    def get_action(self, state: np.ndarray) -> int:
+        """Stateful推論でアクションを選択（LSTM状態を維持）"""
+        logits, value = self.actor_critic.step(state)
+
+        # Softmax
+        logits_max = np.max(logits)
+        exp_logits = np.exp(logits - logits_max)
+        probs = exp_logits / np.sum(exp_logits)
+
+        action = np.random.choice(self.action_size, p=probs)
+        log_prob = float(np.log(probs[action] + 1e-8))
+
+        self._last_log_prob = log_prob
+        self._last_value = value
+        return action
+
+    def act(self, state: np.ndarray, explore: bool = True) -> int:
+        """アクションを選択
+
+        PPO+RNNは常に確率的ポリシーを使用
+        explore=Falseでも確率的サンプリング（ただしLSTM状態は更新）
+        """
+        return self.get_action(state)
+
+    def store(
+        self,
+        state: np.ndarray,
+        action: int,
+        reward: float,
+        next_state: np.ndarray,
+        done: bool,
+        *,
+        terminated=None,
+    ):
+        """経験をバッファに保存"""
+        self.buffer.add(
+            state, action, reward, done,
+            self._last_log_prob, self._last_value
+        )
+
+    def update(self) -> dict | None:
+        """エピソードが十分たまったら更新"""
+        if len(self.buffer) < self.min_episodes:
+            return None
+
+        # GAE計算（エピソード単位）
+        self.buffer.compute_gae_all(self.gamma, self.gae_lambda)
+
+        # サンプリング可能か確認
+        if not self.buffer.can_sample(self.batch_size, self.seq_len, self.burn_in):
+            return None
+
+        # n_epochs × シーケンスバッチ更新
+        total_policy_loss = 0.0
+        total_value_loss = 0.0
+        total_entropy = 0.0
+        n_updates = 0
+
+        for _ in range(self.n_epochs):
+            for batch in self.buffer.get_sequence_batches(
+                self.batch_size, self.seq_len, self.burn_in
+            ):
+                loss_dict = self._update_sequence_batch(batch)
+                total_policy_loss += loss_dict["policy_loss"]
+                total_value_loss += loss_dict["value_loss"]
+                total_entropy += loss_dict["entropy"]
+                n_updates += 1
+
+        # バッファクリア
+        self.buffer.clear()
+
+        # LSTM状態リセット（次のrollout用）
+        self.actor_critic.reset_state()
+
+        if n_updates > 0:
+            self.last_policy_loss = total_policy_loss / n_updates
+            self.last_value_loss = total_value_loss / n_updates
+            self.last_entropy = total_entropy / n_updates
+
+            return {
+                "policy_loss": self.last_policy_loss,
+                "value_loss": self.last_value_loss,
+                "entropy": self.last_entropy,
+            }
+        return None
+
+    def _update_sequence_batch(self, batch: tuple) -> dict:
+        """シーケンスバッチの更新
+
+        - burn_in部分はmaskで除外
+        - LSTM状態はリセットして処理
+        """
+        obs, actions, old_log_probs, advantages, returns, mask = batch
+        B, L = actions.shape
+
+        # Advantage正規化（有効部分のみ）
+        valid_adv = advantages[mask > 0]
+        if len(valid_adv) > 0:
+            adv_mean = valid_adv.mean()
+            adv_std = valid_adv.std()
+            if adv_std > 1e-8:
+                advantages = (advantages - adv_mean) / adv_std
+
+        # Forward (stateful=False)
+        new_log_probs, entropy, values = self.actor_critic.evaluate_sequences(
+            Variable(obs.astype(np.float32)), actions
+        )
+
+        # Policy loss (PPO Clipped) with mask
+        ratio = F.exp(new_log_probs - Variable(old_log_probs.astype(np.float32)))
+        adv_v = Variable(advantages.astype(np.float32))
+
+        surr1 = ratio * adv_v
+
+        # Clipped ratio
+        ratio_data = ratio.data_required
+        clipped_ratio = np.clip(ratio_data, 1 - self.clip_eps, 1 + self.clip_eps)
+        surr2 = Variable(clipped_ratio.astype(np.float32)) * adv_v
+
+        # min(surr1, surr2)
+        surr1_data = surr1.data_required
+        surr2_data = surr2.data_required
+        use_surr1 = (surr1_data <= surr2_data).astype(np.float32)
+        policy_loss_per_step = surr1 * Variable(use_surr1) + surr2 * Variable(1 - use_surr1)
+
+        # Apply mask
+        mask_v = Variable(mask.astype(np.float32))
+        masked_policy_loss = policy_loss_per_step * mask_v
+        total_mask = np.sum(mask)
+        policy_loss = -F.sum(masked_policy_loss) / total_mask
+
+        # Value loss with mask
+        returns_v = Variable(returns.astype(np.float32))
+        value_diff = values - returns_v
+        masked_value_loss = value_diff * value_diff * mask_v
+        value_loss = F.sum(masked_value_loss) / total_mask
+
+        # Entropy with mask
+        masked_entropy = entropy * mask_v
+        entropy_mean = F.sum(masked_entropy) / total_mask
+
+        # Total loss
+        loss = policy_loss + self.value_coef * value_loss - self.entropy_coef * entropy_mean
+
+        # 更新
+        self.actor_critic.cleargrads()
+        loss.backward()
+
+        # Gradient clipping
+        self._clip_grad_norm()
+
+        self.optimizer.update()
+
+        # LSTM状態リセット（次のバッチ用）
+        self.actor_critic.reset_state()
+
+        return {
+            "policy_loss": float(policy_loss.data_required),
+            "value_loss": float(value_loss.data_required),
+            "entropy": float(entropy_mean.data_required),
+        }
+
+    def _clip_grad_norm(self):
+        """Gradient clipping (global norm)"""
+        grads = []
+        for param in self.actor_critic.params():
+            if param.grad is not None:
+                grads.append(param.grad.data_required.flatten())
+
+        if not grads:
+            return
+
+        all_grads = np.concatenate(grads)
+        global_norm = np.sqrt(np.sum(all_grads**2))
+
+        if global_norm > self.max_grad_norm:
+            scale = self.max_grad_norm / global_norm
+            for param in self.actor_critic.params():
+                if param.grad is not None:
+                    param.grad.data = param.grad.data_required * scale
+
+    def decay_epsilon(self):
+        """PPOはepsilon-greedyを使わないのでno-op"""
+        pass
+
+
+def ppo_rnn_stats_extractor(agent) -> str | None:
+    """PPO+RNN Agent用の統計抽出関数"""
+    policy_loss = getattr(agent, "last_policy_loss", None)
+    value_loss = getattr(agent, "last_value_loss", None)
+    entropy = getattr(agent, "last_entropy", None)
+    buffer_len = len(agent.buffer) if hasattr(agent, "buffer") else None
+
+    parts = []
+    if policy_loss is not None:
+        parts.append(f"π={policy_loss:.4f}")
+    if value_loss is not None:
+        parts.append(f"V={value_loss:.4f}")
+    if entropy is not None:
+        parts.append(f"H={entropy:.3f}")
+    if buffer_len is not None:
+        parts.append(f"Eps={buffer_len}")
+
+    if not parts:
+        return None
+    return ", " + ", ".join(parts)

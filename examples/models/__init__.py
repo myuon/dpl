@@ -37,3 +37,9 @@ from models.ppo import (
     RolloutBuffer,
     ppo_stats_extractor,
 )
+from models.ppo_rnn import (
+    RecurrentActorCritic,
+    PPORNNAgent,
+    EpisodeRolloutBuffer,
+    ppo_rnn_stats_extractor,
+)
