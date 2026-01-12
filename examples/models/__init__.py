@@ -31,3 +31,9 @@ from models.drqn import (
     EpisodeReplay,
     drqn_stats_extractor,
 )
+from models.ppo import (
+    ActorCritic,
+    PPOAgent,
+    RolloutBuffer,
+    ppo_stats_extractor,
+)
