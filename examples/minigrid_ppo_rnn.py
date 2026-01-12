@@ -85,8 +85,8 @@ class MiniGridEnvWrapper:
         image = obs["image"].flatten().astype(np.float32) / 10.0
         return image
 
-    def reset(self):
-        obs, info = self.env.reset()
+    def reset(self, *, seed: int | None = None):
+        obs, info = self.env.reset(seed=seed)
         return self._process_obs(obs)
 
     def step(self, action: int | np.ndarray):
@@ -154,16 +154,17 @@ agent = PPORNNAgent(
     gamma=0.99,
     gae_lambda=0.95,
     clip_eps=0.2,
-    entropy_coef=0.02,  # RNN用に高めに設定
+    entropy_coef=0.005,  # 安定性のため調整
     value_coef=0.5,
     lr=3e-4,
-    n_epochs=4,
+    n_epochs=3,  # epochs を減らす
     seq_len=16,
     burn_in=4,
-    batch_size=16,
-    min_episodes=20,
-    max_episodes=100,
+    batch_size=32,  # バッチサイズ増加
+    rollout_steps=2048,  # step数ベースで更新（MiniGrid 8x8では十分なデータ量）
+    max_episodes=200,
     max_grad_norm=0.5,
+    target_kl=0.05,  # KL超過で早期停止
 )
 
 # %%
@@ -174,11 +175,12 @@ trainer = AgentTrainer(
     eval_env=eval_env,
     num_episodes=500,
     eval_interval=50,
-    eval_n=10,
+    eval_n=100,  # 評価を100エピソードに増加
     update_every=1,
     log_interval=50,
     stats_extractor=ppo_rnn_stats_extractor,
     eval_stats_extractor=minigrid_eval_stats_extractor,
+    eval_base_seed=42,  # seed固定で再現性確保
 )
 
 # %%
@@ -187,7 +189,9 @@ result = trainer.train()
 # %%
 print()
 print(f"Total episodes: {len(result.episode_rewards)}")
-print(f"Final policy loss: {agent.last_policy_loss:.4f}" if agent.last_policy_loss else "")
+print(
+    f"Final policy loss: {agent.last_policy_loss:.4f}" if agent.last_policy_loss else ""
+)
 print(f"Final value loss: {agent.last_value_loss:.4f}" if agent.last_value_loss else "")
 print(f"Final entropy: {agent.last_entropy:.4f}" if agent.last_entropy else "")
 

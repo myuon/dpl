@@ -30,7 +30,7 @@ EvalStatsExtractor = Callable[[EvalResult], str]
 class Env(Protocol):
     """環境のプロトコル（離散/連続行動空間対応）"""
 
-    def reset(self) -> ndarray: ...
+    def reset(self, *, seed: int | None = None) -> ndarray: ...
     def step(self, action: int | ndarray) -> tuple[ndarray, float, bool, bool, dict]: ...
 
 
@@ -44,9 +44,9 @@ class GymEnvWrapper:
         """
         self._env = env
 
-    def reset(self) -> np.ndarray:
+    def reset(self, *, seed: int | None = None) -> np.ndarray:
         """環境をリセット（infoを捨ててobsのみ返す）"""
-        obs, _ = self._env.reset()
+        obs, _ = self._env.reset(seed=seed)
         return obs
 
     def step(self, action: int | np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict]:
@@ -95,6 +95,7 @@ class AgentTrainer:
         burn_in_epsilon: float = 0.2,
         stats_extractor: StatsExtractor | None = None,
         eval_stats_extractor: EvalStatsExtractor | None = None,
+        eval_base_seed: int | None = None,
     ):
         self.env = env
         self.eval_env = eval_env if eval_env is not None else env
@@ -109,6 +110,7 @@ class AgentTrainer:
         self.burn_in_epsilon = burn_in_epsilon
         self.stats_extractor = stats_extractor
         self.eval_stats_extractor = eval_stats_extractor
+        self.eval_base_seed = eval_base_seed
 
     def train(self) -> TrainResult:
         """トレーニングを実行"""
@@ -138,7 +140,7 @@ class AgentTrainer:
             # 評価
             if (episode + 1) % self.eval_interval == 0:
                 # Eval-A: ε=0（完全greedy）
-                eval_result = self.evaluate(n=self.eval_n)
+                eval_result = self.evaluate(n=self.eval_n, base_seed=self.eval_base_seed)
                 eval_returns.append((episode + 1, eval_result.avg_return))
                 eval_success_rates.append((episode + 1, eval_result.success_rate))
                 eval_avg_steps.append((episode + 1, eval_result.avg_steps))
@@ -265,6 +267,7 @@ class AgentTrainer:
         n: int = 20,
         burn_in_steps: int = 0,
         burn_in_epsilon: float = 0.0,
+        base_seed: int | None = None,
     ) -> EvalResult:
         """評価を実行
 
@@ -272,6 +275,7 @@ class AgentTrainer:
             n: 評価エピソード数
             burn_in_steps: 最初の数ステップで使うepsilon適用ステップ数（情報収集用）
             burn_in_epsilon: burn_in_steps中に使うepsilon値
+            base_seed: 乱数シードのベース値（指定時は各エピソードで base_seed + i を使用）
 
         Returns:
             EvalResult: 評価結果
@@ -282,8 +286,9 @@ class AgentTrainer:
         steps_to_goal = []
         all_actions: list[float] = []
 
-        for _ in range(n):
-            s = self.eval_env.reset()
+        for i in range(n):
+            seed = base_seed + i if base_seed is not None else None
+            s = self.eval_env.reset(seed=seed)
             # DRQN用: LSTM状態をリセット
             if hasattr(self.agent, "reset_state"):
                 self.agent.reset_state()

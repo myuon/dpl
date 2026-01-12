@@ -48,12 +48,14 @@ class EpisodeRolloutBuffer:
     - エピソード境界を保持
     - GAEはエピソード単位で計算
     - シーケンスを切らずにミニバッチ化
+    - step数ベースで更新タイミングを判定
     """
 
     def __init__(self, max_episodes: int = 100):
         self.max_episodes = max_episodes
         self.episodes: list[list[PPOTransition]] = []
         self.current: list[PPOTransition] = []
+        self._total_steps = 0  # 完了エピソードの総step数
 
         # GAE計算後のデータ
         self.computed_data: list[dict] = []
@@ -61,6 +63,11 @@ class EpisodeRolloutBuffer:
     def __len__(self) -> int:
         """完了したエピソード数を返す"""
         return len(self.episodes)
+
+    @property
+    def total_steps(self) -> int:
+        """完了エピソードの総step数を返す"""
+        return self._total_steps
 
     def start_episode(self):
         """新しいエピソードを開始"""
@@ -74,9 +81,12 @@ class EpisodeRolloutBuffer:
     def end_episode(self):
         """現在のエピソードを完了してバッファに追加"""
         if len(self.current) > 0:
+            self._total_steps += len(self.current)
             self.episodes.append(self.current)
             if len(self.episodes) > self.max_episodes:
-                self.episodes.pop(0)
+                # 古いエピソードを削除する場合はstep数も減らす
+                removed = self.episodes.pop(0)
+                self._total_steps -= len(removed)
         self.current = []
 
     def compute_gae_all(self, gamma: float, gae_lambda: float):
@@ -125,14 +135,20 @@ class EpisodeRolloutBuffer:
 
     def can_sample(self, batch_size: int, seq_len: int, burn_in: int) -> bool:
         """サンプリング可能かどうかを判定"""
-        need = seq_len + burn_in
-        long_eps = [d for d in self.computed_data if len(d["obs"]) >= need]
-        return len(long_eps) >= batch_size
+        L = seq_len + burn_in
+        # 全エピソードからサンプル可能なシーケンス数をカウント
+        total_sequences = 0
+        for d in self.computed_data:
+            ep_len = len(d["obs"])
+            if ep_len >= L:
+                total_sequences += ep_len - L + 1
+        return total_sequences >= batch_size
 
     def get_sequence_batches(self, batch_size: int, seq_len: int, burn_in: int):
         """シーケンス単位でミニバッチを返す
 
         DRQNのsample_sequencesを参考に、PPO用のデータを返す
+        各エピソードから複数のシーケンスをサンプル可能
 
         Yields:
             obs: (B, L, obs_dim)
@@ -143,22 +159,31 @@ class EpisodeRolloutBuffer:
             mask: (B, L) - burn_in部分は0
         """
         L = burn_in + seq_len
-        candidates = [d for d in self.computed_data if len(d["obs"]) >= L]
 
-        if len(candidates) < batch_size:
+        # 各エピソードからサンプル可能なシーケンスの開始位置を列挙
+        # (data_idx, start_pos) のリスト
+        all_sequences: list[tuple[int, int]] = []
+        for data_idx, data in enumerate(self.computed_data):
+            ep_len = len(data["obs"])
+            if ep_len >= L:
+                # このエピソードからサンプル可能な全開始位置
+                for start in range(ep_len - L + 1):
+                    all_sequences.append((data_idx, start))
+
+        if len(all_sequences) < batch_size:
             return
 
-        obs_dim = candidates[0]["obs"].shape[1]
+        obs_dim = self.computed_data[0]["obs"].shape[1]
 
-        # 全候補からシャッフルしてバッチを作成
-        np.random.shuffle(candidates)
+        # 全シーケンスをシャッフル
+        np.random.shuffle(all_sequences)
 
-        for batch_start in range(0, len(candidates), batch_size):
-            batch_candidates = candidates[batch_start:batch_start + batch_size]
-            if len(batch_candidates) < batch_size:
+        for batch_start in range(0, len(all_sequences), batch_size):
+            batch_sequences = all_sequences[batch_start:batch_start + batch_size]
+            if len(batch_sequences) < batch_size:
                 break
 
-            B = len(batch_candidates)
+            B = len(batch_sequences)
             obs = np.zeros((B, L, obs_dim), np.float32)
             actions = np.zeros((B, L), np.int64)
             log_probs = np.zeros((B, L), np.float32)
@@ -166,9 +191,8 @@ class EpisodeRolloutBuffer:
             returns = np.zeros((B, L), np.float32)
             mask = np.zeros((B, L), np.float32)
 
-            for b, data in enumerate(batch_candidates):
-                ep_len = len(data["obs"])
-                start = np.random.randint(0, ep_len - L + 1)
+            for b, (data_idx, start) in enumerate(batch_sequences):
+                data = self.computed_data[data_idx]
 
                 obs[b] = data["obs"][start:start + L]
                 actions[b] = data["actions"][start:start + L]
@@ -186,6 +210,7 @@ class EpisodeRolloutBuffer:
         self.episodes = []
         self.current = []
         self.computed_data = []
+        self._total_steps = 0
 
 
 class RecurrentActorCritic(L.Layer):
@@ -346,9 +371,10 @@ class PPORNNAgent(BaseAgent):
         seq_len: int = 16,
         burn_in: int = 4,
         batch_size: int = 16,
-        min_episodes: int = 10,
+        rollout_steps: int = 2048,  # step数ベースで更新（episode数ではなく）
         max_episodes: int = 100,
         max_grad_norm: float = 0.5,
+        target_kl: float | None = None,  # KL超過で早期停止
     ):
         self.actor_critic = actor_critic
         self.action_size = action_size
@@ -362,8 +388,9 @@ class PPORNNAgent(BaseAgent):
         self.seq_len = seq_len
         self.burn_in = burn_in
         self.batch_size = batch_size
-        self.min_episodes = min_episodes
+        self.rollout_steps = rollout_steps
         self.max_grad_norm = max_grad_norm
+        self.target_kl = target_kl
 
         self.optimizer = Adam(lr=lr).setup(self.actor_critic)
         self.buffer = EpisodeRolloutBuffer(max_episodes=max_episodes)
@@ -376,6 +403,8 @@ class PPORNNAgent(BaseAgent):
         self.last_policy_loss: float | None = None
         self.last_value_loss: float | None = None
         self.last_entropy: float | None = None
+        self.last_approx_kl: float | None = None
+        self.last_total_steps: int | None = None  # 更新時のstep数
 
     def reset_state(self):
         """LSTM状態をリセット（エピソード開始時に呼び出す）"""
@@ -430,8 +459,9 @@ class PPORNNAgent(BaseAgent):
         )
 
     def update(self) -> dict | None:
-        """エピソードが十分たまったら更新"""
-        if len(self.buffer) < self.min_episodes:
+        """step数が十分たまったら更新（episode数ではなくstep数ベース）"""
+        # step数ベースで更新判定
+        if self.buffer.total_steps < self.rollout_steps:
             return None
 
         # GAE計算（エピソード単位）
@@ -441,13 +471,19 @@ class PPORNNAgent(BaseAgent):
         if not self.buffer.can_sample(self.batch_size, self.seq_len, self.burn_in):
             return None
 
+        self.last_total_steps = self.buffer.total_steps
+
         # n_epochs × シーケンスバッチ更新
         total_policy_loss = 0.0
         total_value_loss = 0.0
         total_entropy = 0.0
+        total_approx_kl = 0.0
         n_updates = 0
+        early_stopped = False
 
-        for _ in range(self.n_epochs):
+        for epoch in range(self.n_epochs):
+            if early_stopped:
+                break
             for batch in self.buffer.get_sequence_batches(
                 self.batch_size, self.seq_len, self.burn_in
             ):
@@ -455,7 +491,13 @@ class PPORNNAgent(BaseAgent):
                 total_policy_loss += loss_dict["policy_loss"]
                 total_value_loss += loss_dict["value_loss"]
                 total_entropy += loss_dict["entropy"]
+                total_approx_kl += loss_dict["approx_kl"]
                 n_updates += 1
+
+                # target_kl による早期停止
+                if self.target_kl is not None and loss_dict["approx_kl"] > self.target_kl:
+                    early_stopped = True
+                    break
 
         # バッファクリア
         self.buffer.clear()
@@ -467,11 +509,13 @@ class PPORNNAgent(BaseAgent):
             self.last_policy_loss = total_policy_loss / n_updates
             self.last_value_loss = total_value_loss / n_updates
             self.last_entropy = total_entropy / n_updates
+            self.last_approx_kl = total_approx_kl / n_updates
 
             return {
                 "policy_loss": self.last_policy_loss,
                 "value_loss": self.last_value_loss,
                 "entropy": self.last_entropy,
+                "approx_kl": self.last_approx_kl,
             }
         return None
 
@@ -498,7 +542,8 @@ class PPORNNAgent(BaseAgent):
         )
 
         # Policy loss (PPO Clipped) with mask
-        ratio = F.exp(new_log_probs - Variable(old_log_probs.astype(np.float32)))
+        log_ratio = new_log_probs - Variable(old_log_probs.astype(np.float32))
+        ratio = F.exp(log_ratio)
         adv_v = Variable(advantages.astype(np.float32))
 
         surr1 = ratio * adv_v
@@ -530,6 +575,12 @@ class PPORNNAgent(BaseAgent):
         masked_entropy = entropy * mask_v
         entropy_mean = F.sum(masked_entropy) / total_mask
 
+        # Approx KL (for early stopping): E[(r-1) - log(r)]
+        # 簡易版: E[log_ratio^2 / 2] (second-order Taylor)
+        log_ratio_data = log_ratio.data_required
+        masked_log_ratio = log_ratio_data * mask
+        approx_kl = float(np.sum(masked_log_ratio ** 2) / (2 * total_mask))
+
         # Total loss
         loss = policy_loss + self.value_coef * value_loss - self.entropy_coef * entropy_mean
 
@@ -549,6 +600,7 @@ class PPORNNAgent(BaseAgent):
             "policy_loss": float(policy_loss.data_required),
             "value_loss": float(value_loss.data_required),
             "entropy": float(entropy_mean.data_required),
+            "approx_kl": approx_kl,
         }
 
     def _clip_grad_norm(self):
@@ -580,7 +632,8 @@ def ppo_rnn_stats_extractor(agent) -> str | None:
     policy_loss = getattr(agent, "last_policy_loss", None)
     value_loss = getattr(agent, "last_value_loss", None)
     entropy = getattr(agent, "last_entropy", None)
-    buffer_len = len(agent.buffer) if hasattr(agent, "buffer") else None
+    approx_kl = getattr(agent, "last_approx_kl", None)
+    total_steps = getattr(agent, "last_total_steps", None)
 
     parts = []
     if policy_loss is not None:
@@ -589,8 +642,10 @@ def ppo_rnn_stats_extractor(agent) -> str | None:
         parts.append(f"V={value_loss:.4f}")
     if entropy is not None:
         parts.append(f"H={entropy:.3f}")
-    if buffer_len is not None:
-        parts.append(f"Eps={buffer_len}")
+    if approx_kl is not None:
+        parts.append(f"KL={approx_kl:.4f}")
+    if total_steps is not None:
+        parts.append(f"Steps={total_steps}")
 
     if not parts:
         return None
