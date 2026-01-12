@@ -16,7 +16,6 @@ from gymnasium import ActionWrapper
 import dpl.layers as L
 import dpl.functions as F
 from dpl import Variable
-from dpl.core import as_jax  # JAX配列への変換用
 from dpl.agent_trainer import AgentTrainer, EvalResult
 from models.dqn import DQNAgent, dqn_stats_extractor
 
@@ -109,10 +108,10 @@ class MiniGridEnvWrapper:
         self.obs_shape = img_shape  # (H, W, C)
         self.state_size = int(np.prod(img_shape))  # フラット化後のサイズ
 
-    def _process_obs(self, obs: dict):
-        """image をフラット化してJAX配列に変換"""
+    def _process_obs(self, obs: dict) -> np.ndarray:
+        """image をフラット化"""
         image = obs["image"].flatten().astype(np.float32) / 10.0
-        return as_jax(image)
+        return image
 
     def reset(self):
         obs, info = self.env.reset()
@@ -168,8 +167,8 @@ action_size = 3  # left, right, forward
 qnet = QNet(state_size, action_size)
 target_qnet = QNet(state_size, action_size)
 
-# ダミー入力で重みを初期化 - JAX配列でGPU計算を有効化
-dummy_input = Variable(as_jax(np.zeros((1, state_size), dtype=np.float32)))
+# ダミー入力で重みを初期化
+dummy_input = Variable(np.zeros((1, state_size), dtype=np.float32))
 qnet(dummy_input)
 target_qnet(dummy_input)
 
@@ -271,9 +270,7 @@ if FULLY_OBS:
         FullyObsWrapper(gym.make(ENV_NAME, render_mode="rgb_array"))
     )
 else:
-    render_env = SimpleActionWrapper(
-        gym.make(ENV_NAME, render_mode="rgb_array")
-    )
+    render_env = SimpleActionWrapper(gym.make(ENV_NAME, render_mode="rgb_array"))
 frames = []
 action_names = ["left", "right", "forward"]
 action_history = []
