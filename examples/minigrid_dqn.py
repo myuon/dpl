@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from typing import Callable
 
 import minigrid
-from minigrid.wrappers import FullyObsWrapper, ImgObsWrapper
+from minigrid.wrappers import FullyObsWrapper
 
 import dpl.layers as L
 import dpl.functions as F
@@ -41,55 +41,35 @@ from dpl.agent_trainer import AgentTrainer, GymEnvWrapper, EvalResult
 
 # %%
 class QNet(L.Layer):
-    """MiniGrid用のCNN-based Q-Network
+    """MiniGrid用のMLP Q-Network
 
-    画像観測 (B, H, W, C) を入力としてCNNで特徴抽出後、MLPヘッドでQ値を出力
+    フラット化した観測を入力とするシンプルなMLP
+    ※ MiniGrid観測はカテゴリ値 (object_id, color_id, state_id) なので
+      まずMLPで動作確認してからCNN化を検討
     """
 
     def __init__(
         self,
-        obs_shape: tuple[int, int, int],
+        state_size: int,
         action_size: int = 3,
         hidden_size: int = 128,
     ):
         super().__init__()
-        H, W, C = obs_shape
-        self.obs_shape = obs_shape
+        self.state_size = state_size
         self.action_size = action_size
 
-        # CNN feature extractor
-        self.cnn = L.Sequential(
-            L.Conv2d(32, kernel_size=3, pad=1, in_channels=C),
+        # シンプルなMLP
+        self.net = L.Sequential(
+            L.Linear(hidden_size, in_size=state_size),
             F.relu,
-            L.Conv2d(64, kernel_size=3, pad=1),
-            F.relu,
-        )
-
-        # Flatten後のサイズ: 64 * H * W
-        flatten_size = 64 * H * W
-
-        # MLP head
-        self.head = L.Sequential(
-            L.Linear(hidden_size, in_size=flatten_size),
+            L.Linear(hidden_size),
             F.relu,
             L.Linear(action_size),
         )
 
     def forward(self, *xs: Variable) -> Variable:
         (x,) = xs
-
-        # x: (B, H, W, C) → (B, C, H, W)
-        x = F.transpose(x, 0, 3, 1, 2)
-
-        # CNN feature extraction
-        x = self.cnn(x)
-
-        # Flatten: (B, C, H, W) → (B, C*H*W)
-        batch_size = x.shape[0]
-        x = F.reshape(x, (batch_size, -1))
-
-        # MLP head
-        return self.head(x)
+        return self.net(x)
 
 
 # %%
@@ -104,7 +84,7 @@ class DQNAgent(BaseAgent):
 
     def __init__(
         self,
-        obs_shape: tuple[int, int, int],  # (H, W, C)
+        state_size: int,  # フラット化した状態サイズ
         action_size: int = 3,  # left, right, forward for Empty environments
         gamma: float = 0.99,
         epsilon: float = 1.0,
@@ -117,7 +97,7 @@ class DQNAgent(BaseAgent):
         hidden_size: int = 128,
         warmup_steps: int = 500,
     ):
-        self.obs_shape = obs_shape
+        self.state_size = state_size
         self.action_size = action_size
         self.gamma = gamma
         self.epsilon = epsilon
@@ -127,11 +107,11 @@ class DQNAgent(BaseAgent):
         self.tau = tau
         self.warmup_steps = warmup_steps
 
-        # Q-Network (CNN-based)
-        self.qnet = QNet(obs_shape, action_size, hidden_size)
-        self.target_qnet = QNet(obs_shape, action_size, hidden_size)
-        # ダミー入力で重みを初期化: (B, H, W, C)
-        dummy_input = Variable(np.zeros((1, *obs_shape), dtype=np.float32))
+        # Q-Network (MLP)
+        self.qnet = QNet(state_size, action_size, hidden_size)
+        self.target_qnet = QNet(state_size, action_size, hidden_size)
+        # ダミー入力で重みを初期化
+        dummy_input = Variable(np.zeros((1, state_size), dtype=np.float32))
         self.qnet(dummy_input)
         self.target_qnet(dummy_input)
 
@@ -170,8 +150,8 @@ class DQNAgent(BaseAgent):
 
     def _greedy_action(self, state: np.ndarray) -> int:
         """Q値が最大のアクションを選択"""
-        # state: (H, W, C) → (1, H, W, C)
-        state_v = Variable(state[np.newaxis, ...].astype(np.float32))
+        # state: (state_size,) → (1, state_size)
+        state_v = Variable(state.reshape(1, -1).astype(np.float32))
         q_values = self.qnet(state_v)
         return int(np.argmax(q_values.data_required))
 
@@ -272,29 +252,35 @@ class DQNAgent(BaseAgent):
 class MiniGridEnvWrapper:
     """MiniGrid用のラッパー
 
-    FullyObsWrapper + ImgObsWrapper を適用
-    観測は (H, W, C) 形式のまま保持（CNNに渡すため）
+    FullyObsWrapper を適用し、image + direction を連結して返す
+    ※ ImgObsWrapperはdirectionを捨てるので使わない
     """
 
     def __init__(self, env_name: str = "MiniGrid-Empty-5x5-v0"):
         self.base_env = gym.make(env_name)
-        self.env = ImgObsWrapper(FullyObsWrapper(self.base_env))
-        shape = self.env.observation_space.shape
-        assert shape is not None and len(shape) == 3
-        self.obs_shape: tuple[int, int, int] = (
-            shape[0],
-            shape[1],
-            shape[2],
-        )  # (H, W, C)
+        self.env = FullyObsWrapper(self.base_env)
+        # image shape + direction (4方向 one-hot)
+        img_shape = self.env.observation_space["image"].shape
+        assert img_shape is not None
+        self.obs_shape = img_shape
+        self.state_size = int(np.prod(img_shape)) + 4  # image + direction one-hot
+
+    def _process_obs(self, obs: dict) -> np.ndarray:
+        """image + direction one-hot をフラット化"""
+        image = obs["image"].flatten().astype(np.float32) / 10.0
+        direction = obs["direction"]
+        direction_onehot = np.zeros(4, dtype=np.float32)
+        direction_onehot[direction] = 1.0
+        return np.concatenate([image, direction_onehot])
 
     def reset(self) -> np.ndarray:
         obs, info = self.env.reset()
-        return obs.astype(np.float32) / 10.0  # 正規化、shape=(H, W, C)
+        return self._process_obs(obs)
 
     def step(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict]:
         obs, reward, terminated, truncated, info = self.env.step(action)
         return (
-            obs.astype(np.float32) / 10.0,  # 正規化、shape=(H, W, C)
+            self._process_obs(obs),
             float(reward),
             terminated,
             truncated,
@@ -346,7 +332,7 @@ print()
 
 # DQN エージェント (CNN-based)
 agent = DQNAgent(
-    obs_shape=env.obs_shape,  # (H, W, C)
+    state_size=env.state_size,
     action_size=3,  # left, right, forward（Empty環境用）
     gamma=0.99,
     epsilon=1.0,
@@ -436,25 +422,35 @@ from matplotlib import animation
 from IPython.display import HTML
 
 # フレームを収集
-render_env = ImgObsWrapper(
-    FullyObsWrapper(gym.make("MiniGrid-Empty-5x5-v0", render_mode="rgb_array"))
+render_env = FullyObsWrapper(
+    gym.make("MiniGrid-Empty-5x5-v0", render_mode="rgb_array")
 )
 frames = []
 action_names = ["left", "right", "forward"]
 action_history = []
 
+
+def process_obs_for_render(obs: dict) -> np.ndarray:
+    """観測をエージェント用にフラット化"""
+    image = obs["image"].flatten().astype(np.float32) / 10.0
+    direction = obs["direction"]
+    direction_onehot = np.zeros(4, dtype=np.float32)
+    direction_onehot[direction] = 1.0
+    return np.concatenate([image, direction_onehot])
+
+
 obs, _ = render_env.reset()
-obs_normalized = obs.astype(np.float32) / 10.0  # (H, W, C)
+obs_flat = process_obs_for_render(obs)
 
 for step in range(50):
     # rgb_array でレンダリング
     frame = render_env.render()
     frames.append(frame)
 
-    action = agent.act(obs_normalized, explore=False)
+    action = agent.act(obs_flat, explore=False)
     action_history.append(action_names[action])
     obs, reward, terminated, truncated, _ = render_env.step(action)
-    obs_normalized = obs.astype(np.float32) / 10.0  # (H, W, C)
+    obs_flat = process_obs_for_render(obs)
 
     if terminated or truncated:
         # 最後のフレームも追加
