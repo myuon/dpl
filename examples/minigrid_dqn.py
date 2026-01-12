@@ -2,7 +2,7 @@
 # # MiniGrid DQN
 #
 # DQNを用いたMiniGrid環境の学習
-# FullyObsWrapper で完全観測モードを使用
+# Partial Observation (エージェント視点 7x7) モードを使用
 
 # %%
 import gymnasium as gym
@@ -11,7 +11,6 @@ import matplotlib.pyplot as plt
 from typing import Callable
 
 import minigrid
-from minigrid.wrappers import FullyObsWrapper
 from gymnasium import ActionWrapper
 
 import dpl.layers as L
@@ -25,8 +24,8 @@ from models.dqn import DQNAgent, dqn_stats_extractor
 #
 # | 項目 | 内容 |
 # |------|------|
-# | 環境 | MiniGrid-Empty-5x5-v0 |
-# | 観測 | shape=(5, 5, 3), 0-10のuint8 (FullyObsWrapper + ImgObsWrapper) |
+# | 環境 | Train: Empty-6x6, Eval: Empty-Random-6x6 |
+# | 観測 | shape=(7, 7, 3), 0-10のuint8 (Partial Obs: エージェント視点) |
 # | 行動 | Discrete(3): left, right, forward（Empty環境用に制限）|
 # | 報酬 | ゴール到達時に 1 - 0.9 * (step_count / max_steps) |
 # | terminated | ゴール到達時にTrue |
@@ -96,13 +95,13 @@ class SimpleActionWrapper(ActionWrapper):
 class MiniGridEnvWrapper:
     """MiniGrid用のラッパー
 
-    FullyObsWrapper を適用し、image + direction を連結して返す
-    ※ ImgObsWrapperはdirectionを捨てるので使わない
+    Partial Observation (エージェント視点 7x7) を使用
+    image + direction を連結して返す
     """
 
-    def __init__(self, env_name: str = "MiniGrid-Empty-5x5-v0"):
+    def __init__(self, env_name: str = "MiniGrid-Empty-8x8-v0"):
         self.base_env = gym.make(env_name)
-        self.env = SimpleActionWrapper(FullyObsWrapper(self.base_env))
+        self.env = SimpleActionWrapper(self.base_env)
         # image shape + direction (4方向 one-hot)
         img_shape = self.env.observation_space["image"].shape
         assert img_shape is not None
@@ -121,7 +120,7 @@ class MiniGridEnvWrapper:
         obs, info = self.env.reset()
         return self._process_obs(obs)
 
-    def step(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict]:
+    def step(self, action: int | np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict]:
         obs, reward, terminated, truncated, info = self.env.step(action)
         return (
             self._process_obs(obs),
@@ -150,11 +149,14 @@ def minigrid_eval_stats_extractor(result: EvalResult) -> str:
 # ## 実行：DQN
 
 # %%
-print("=== MiniGrid-Empty-5x5-v0 DQN ===")
+print("=== MiniGrid DQN ===")
+print("Train: MiniGrid-Empty-6x6-v0")
+print("Eval:  MiniGrid-Empty-Random-6x6-v0")
 print()
 
 # 環境セットアップ
-env = MiniGridEnvWrapper("MiniGrid-Empty-5x5-v0")
+env = MiniGridEnvWrapper("MiniGrid-Empty-6x6-v0")
+eval_env = MiniGridEnvWrapper("MiniGrid-Empty-Random-6x6-v0")
 print(f"Observation shape: {env.obs_shape}")
 print()
 
@@ -191,6 +193,7 @@ agent = DQNAgent(
 # AgentTrainerで学習
 trainer = AgentTrainer(
     env=env,
+    eval_env=eval_env,
     agent=agent,
     num_episodes=300,
     eval_interval=30,
@@ -262,9 +265,9 @@ plt.show()
 from matplotlib import animation
 from IPython.display import HTML
 
-# フレームを収集
+# フレームを収集 (eval環境で動作確認)
 render_env = SimpleActionWrapper(
-    FullyObsWrapper(gym.make("MiniGrid-Empty-5x5-v0", render_mode="rgb_array"))
+    gym.make("MiniGrid-Empty-Random-6x6-v0", render_mode="rgb_array")
 )
 frames = []
 action_names = ["left", "right", "forward"]
