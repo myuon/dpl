@@ -41,47 +41,33 @@ from models.dqn import DQNAgent, dqn_stats_extractor
 
 # %%
 class QNet(L.Layer):
-    """MiniGrid用のCNN Q-Network
+    """MiniGrid用のMLP Q-Network
 
-    入力: (N, C, H, W) 形式の画像
+    フラット化した観測を入力とするシンプルなMLP
     """
 
     def __init__(
         self,
-        obs_shape: tuple[int, int, int],  # (H, W, C)
+        state_size: int,
         action_size: int = 3,
+        hidden_size: int = 128,
     ):
         super().__init__()
-        H, W, C = obs_shape
-        self.obs_shape = obs_shape
+        self.state_size = state_size
         self.action_size = action_size
 
-        # CNN特徴抽出
-        self.conv = L.Sequential(
-            L.Conv2d(16, kernel_size=3, stride=1, pad=1, in_channels=C),
+        # シンプルなMLP
+        self.net = L.Sequential(
+            L.Linear(hidden_size, in_size=state_size),
             F.relu,
-            L.Conv2d(32, kernel_size=3, stride=1, pad=1),
-            F.relu,
-        )
-
-        # CNN出力サイズを計算 (padding=1, stride=1 なので H, W は変わらない)
-        conv_out_size = 32 * H * W
-
-        # 全結合層
-        self.fc = L.Sequential(
-            L.Linear(128, in_size=conv_out_size),
+            L.Linear(hidden_size),
             F.relu,
             L.Linear(action_size),
         )
 
     def forward(self, *xs: Variable) -> Variable:
         (x,) = xs
-        # CNN
-        h = self.conv(x)
-        # Flatten
-        h = F.reshape(h, (h.shape[0], -1))
-        # FC
-        return self.fc(h)
+        return self.net(x)
 
 
 # %% [markdown]
@@ -121,11 +107,11 @@ class MiniGridEnvWrapper:
         img_shape = self.env.observation_space["image"].shape
         assert img_shape is not None
         self.obs_shape = img_shape  # (H, W, C)
+        self.state_size = int(np.prod(img_shape))  # フラット化後のサイズ
 
     def _process_obs(self, obs: dict):
-        """image を (C, H, W) 形式に変換し、JAX配列としてGPU計算を有効化"""
-        # (H, W, C) -> (C, H, W)
-        image = obs["image"].transpose(2, 0, 1).astype(np.float32) / 10.0
+        """image をフラット化してJAX配列に変換"""
+        image = obs["image"].flatten().astype(np.float32) / 10.0
         return as_jax(image)
 
     def reset(self):
@@ -172,19 +158,18 @@ print()
 # 環境セットアップ
 env = MiniGridEnvWrapper(ENV_NAME, fully_obs=FULLY_OBS)
 eval_env = MiniGridEnvWrapper(ENV_NAME, fully_obs=FULLY_OBS)
-print(f"Observation shape: {env.obs_shape}")
+print(f"Observation shape: {env.obs_shape}, state_size: {env.state_size}")
 print()
 
 # Q-Network作成
-obs_shape = env.obs_shape  # (H, W, C)
+state_size = env.state_size
 action_size = 3  # left, right, forward
 
-qnet = QNet(obs_shape, action_size)
-target_qnet = QNet(obs_shape, action_size)
+qnet = QNet(state_size, action_size)
+target_qnet = QNet(state_size, action_size)
 
-# ダミー入力で重みを初期化 (N, C, H, W) - JAX配列でGPU計算を有効化
-H, W, C = obs_shape
-dummy_input = Variable(as_jax(np.zeros((1, C, H, W), dtype=np.float32)))
+# ダミー入力で重みを初期化 - JAX配列でGPU計算を有効化
+dummy_input = Variable(as_jax(np.zeros((1, state_size), dtype=np.float32)))
 qnet(dummy_input)
 target_qnet(dummy_input)
 
@@ -295,8 +280,8 @@ action_history = []
 
 
 def process_obs_for_render(obs: dict) -> np.ndarray:
-    """観測を (C, H, W) 形式に変換"""
-    image = obs["image"].transpose(2, 0, 1).astype(np.float32) / 10.0
+    """観測をフラット化"""
+    image = obs["image"].flatten().astype(np.float32) / 10.0
     return image
 
 
