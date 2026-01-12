@@ -3,6 +3,7 @@
 import numpy as np
 
 import dpl.layers as L
+import dpl.functions as F
 from dpl import Variable
 from dpl.optimizers import Adam
 from dpl.agent import ReplayBuffer, BaseAgent
@@ -113,12 +114,11 @@ class DQNAgent(BaseAgent):
     ):
         """経験をバッファに保存"""
         self.buffer.push(state, action, reward, next_state, done)
-        self.learn_step += 1
 
     def update(self) -> dict | None:
         """Replay Bufferからサンプリングして更新"""
         # Warmup期間中は更新しない
-        if self.learn_step < self.warmup_steps:
+        if len(self.buffer) < self.warmup_steps:
             return None
 
         # バッファサイズが足りない場合は更新しない
@@ -132,39 +132,34 @@ class DQNAgent(BaseAgent):
 
         states_v = Variable(states)
         next_states_v = Variable(next_states)
-        rewards_v = rewards.reshape(-1, 1)
-        dones_v = dones.reshape(-1, 1)
 
-        # 次状態のQ値を計算
+        # 次状態のQ値を計算 (勾配不要)
         next_q_values = self.qnet(next_states_v).data_required
 
         if self.target_qnet is not None:
             # Double DQN: action選択はqnet、Q値評価はtarget_qnet
             next_actions = np.argmax(next_q_values, axis=1)
             next_q_target = self.target_qnet(next_states_v).data_required
-            next_q = next_q_target[np.arange(self.batch_size), next_actions].reshape(
-                -1, 1
-            )
+            max_next_q = next_q_target[np.arange(self.batch_size), next_actions]
         else:
             # 通常DQN: qnetでmax Q値を直接使用
-            next_q = np.max(next_q_values, axis=1, keepdims=True)
+            max_next_q = np.max(next_q_values, axis=1)
 
         # TD target: r + γ * max_a Q(s', a)
-        td_target = rewards_v + self.gamma * next_q * (1 - dones_v)
+        targets = rewards + self.gamma * max_next_q * (1 - dones)
 
-        # 現在のQ値
-        current_q = self.qnet(states_v)
-        # 選択したアクションのQ値のみ取り出す
-        actions_idx = actions.astype(np.int64)
-        current_q_selected = Variable(
-            current_q.data_required[np.arange(self.batch_size), actions_idx].reshape(
-                -1, 1
-            )
-        )
+        # 現在のQ値を計算（勾配あり）
+        q_values = self.qnet(states_v)  # (batch, action_size)
+
+        # one-hotマスクでアクションのQ値を取り出す（勾配を維持）
+        action_masks = np.eye(self.action_size)[actions.astype(np.int64)]
+        current_q = F.sum(
+            q_values * Variable(action_masks.astype(np.float32)), axis=1
+        )  # (batch,)
 
         # MSE Loss
-        td_target_v = Variable(td_target.astype(np.float32))
-        loss = ((current_q_selected - td_target_v) ** 2).sum() / self.batch_size
+        targets_v = Variable(targets.astype(np.float32))
+        loss = F.mean_squared_error(current_q, targets_v)
 
         # 勾配計算と更新
         self.qnet.cleargrads()
@@ -172,6 +167,7 @@ class DQNAgent(BaseAgent):
         self.optimizer.update()
 
         # Target networkのsoft update
+        self.learn_step += 1
         self._soft_update_target()
 
         self.last_loss = float(loss.data_required)
