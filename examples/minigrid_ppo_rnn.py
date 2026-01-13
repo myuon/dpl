@@ -30,7 +30,7 @@ from gymnasium import ActionWrapper
 import dpl.layers as L
 import dpl.functions as F
 from dpl import Variable
-from dpl.agent_trainer import EvalResult
+from dpl.agent_trainer import EvalResult, ParallelAgentTrainer
 from models.ppo_rnn import RecurrentActorCritic, PPORNNAgent, ppo_rnn_stats_extractor
 
 # %% [markdown]
@@ -224,85 +224,56 @@ agent = PPORNNAgent(
 )
 
 # %% [markdown]
-# ## 学習ループ（並列環境 + collect_rollout）
+# ## 学習ループ（ParallelAgentTrainer）
 
 # %%
-import time
+# 評価用エージェント（n_envs=1）
+eval_actor_critic = RecurrentActorCritic(obs_dim, action_size, hidden_size, n_envs=1)
+eval_actor_critic(Variable(np.zeros((1, 1, obs_dim), dtype=np.float32)))  # 初期化
+eval_actor_critic.reset_state()
+eval_agent = PPORNNAgent(
+    actor_critic=eval_actor_critic,
+    action_size=action_size,
+    obs_dim=obs_dim,
+    n_envs=1,
+)
 
-NUM_UPDATES = 200  # 更新回数
-EVAL_INTERVAL = 20  # 評価間隔（更新回数）
-EVAL_N = 100  # 評価エピソード数
-LOG_INTERVAL = 10  # ログ間隔
 
-# 結果記録用
-all_episode_rewards: list[float] = []
-eval_returns: list[tuple[int, float]] = []
-eval_success_rates: list[tuple[int, float]] = []
+def get_weights():
+    """学習エージェントから重みを取得"""
+    return [p.data.copy() if p.data is not None else None for p in actor_critic.params()]
 
-start_time = time.time()
 
-for update in range(NUM_UPDATES):
-    # rollout収集 & 更新
-    steps, episode_rewards = agent.collect_rollout(env)
-    all_episode_rewards.extend(episode_rewards)
+def set_weights(eval_agent, weights):
+    """評価エージェントに重みを設定"""
+    for w, p in zip(weights, eval_agent.actor_critic.params()):
+        if w is not None:
+            p.data = w
 
-    loss_dict = agent.update()
 
-    # ログ出力
-    if (update + 1) % LOG_INTERVAL == 0:
-        elapsed = time.time() - start_time
-        remaining = elapsed / (update + 1) * (NUM_UPDATES - update - 1)
+# ParallelAgentTrainerで学習
+trainer = ParallelAgentTrainer(
+    env=env,
+    agent=agent,
+    eval_env=eval_env,
+    eval_agent=eval_agent,
+    get_weights=get_weights,
+    set_weights=set_weights,
+    num_updates=200,
+    eval_interval=20,
+    eval_n=100,
+    log_interval=10,
+    stats_extractor=ppo_rnn_stats_extractor,
+    eval_stats_extractor=minigrid_eval_stats_extractor,
+    eval_base_seed=42,
+)
 
-        avg_return = np.mean(episode_rewards) if episode_rewards else 0.0
-        stats = ppo_rnn_stats_extractor(agent) or ""
-        print(
-            f"Update {update + 1}/{NUM_UPDATES}: "
-            f"Episodes={len(episode_rewards)}, AvgReturn={avg_return:.2f}{stats}, "
-            f"ETA={remaining:.0f}s"
-        )
-
-    # 評価
-    if (update + 1) % EVAL_INTERVAL == 0:
-        # 評価用に単一環境モードのactor_criticを作成
-        eval_actor_critic = RecurrentActorCritic(obs_dim, action_size, hidden_size, n_envs=1)
-        # 重みをコピー
-        for src, dst in zip(actor_critic.params(), eval_actor_critic.params()):
-            if src.data is not None:
-                dst.data = src.data.copy()
-
-        returns = []
-        successes = []
-        for ep in range(EVAL_N):
-            eval_actor_critic.reset_state()
-            obs = eval_env.reset(seed=42 + ep)
-            done = False
-            total_return = 0.0
-            while not done:
-                logits, _ = eval_actor_critic.step(obs)
-                logits_max = np.max(logits)
-                exp_logits = np.exp(logits - logits_max)
-                probs = exp_logits / np.sum(exp_logits)
-                action = np.random.choice(action_size, p=probs)
-                obs, reward, terminated, truncated, _ = eval_env.step(action)
-                done = terminated or truncated
-                total_return += reward
-            returns.append(total_return)
-            successes.append(terminated)
-
-        avg_return = float(np.mean(returns))
-        success_rate = float(np.mean(successes))
-        eval_returns.append((update + 1, avg_return))
-        eval_success_rates.append((update + 1, success_rate))
-        print(
-            f"  → Eval: Return={avg_return:.3f}, "
-            f"Success={success_rate*100:.0f}%"
-        )
-
-print(f"\nTraining completed in {time.time() - start_time:.1f}s")
+# %%
+result = trainer.train()
 
 # %%
 print()
-print(f"Total episodes: {len(all_episode_rewards)}")
+print(f"Total episodes: {len(result.episode_rewards)}")
 print(
     f"Final policy loss: {agent.last_policy_loss:.4f}" if agent.last_policy_loss else ""
 )
@@ -316,14 +287,14 @@ print(f"Final entropy: {agent.last_entropy:.4f}" if agent.last_entropy else "")
 fig, axes = plt.subplots(1, 3, figsize=(15, 4))
 
 # Episode Returns
-axes[0].plot(all_episode_rewards, alpha=0.3, label="Episode")
+axes[0].plot(result.episode_rewards, alpha=0.3, label="Episode")
 window = 50
-if len(all_episode_rewards) >= window:
+if len(result.episode_rewards) >= window:
     moving_avg = np.convolve(
-        all_episode_rewards, np.ones(window) / window, mode="valid"
+        result.episode_rewards, np.ones(window) / window, mode="valid"
     )
     axes[0].plot(
-        range(window - 1, len(all_episode_rewards)),
+        range(window - 1, len(result.episode_rewards)),
         moving_avg,
         label=f"MA({window})",
     )
@@ -334,8 +305,8 @@ axes[0].legend()
 axes[0].grid(True)
 
 # Eval Returns
-if eval_returns:
-    updates, means = zip(*eval_returns)
+if result.eval_returns:
+    updates, means = zip(*result.eval_returns)
     axes[1].plot(updates, means, marker="o")
     axes[1].set_xlabel("Update")
     axes[1].set_ylabel("Eval Return")
@@ -343,8 +314,8 @@ if eval_returns:
     axes[1].grid(True)
 
 # Success Rate
-if eval_success_rates:
-    updates, rates = zip(*eval_success_rates)
+if result.eval_success_rates:
+    updates, rates = zip(*result.eval_success_rates)
     axes[2].plot(updates, [r * 100 for r in rates], marker="o", color="green")
     axes[2].set_xlabel("Update")
     axes[2].set_ylabel("Success Rate (%)")

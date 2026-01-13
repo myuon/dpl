@@ -328,3 +328,210 @@ class AgentTrainer:
             mean_abs_action=float(np.mean(all_actions)) if all_actions else 0.0,
             n=n,
         )
+
+
+class VectorEnv(Protocol):
+    """並列環境のプロトコル"""
+
+    n_envs: int
+
+    def reset(self) -> ndarray: ...  # (n_envs, obs_dim)
+    def reset_single(self, env_id: int) -> ndarray: ...  # (obs_dim,)
+    def step(self, actions: ndarray) -> tuple[ndarray, ndarray, ndarray, ndarray]: ...
+
+
+class ParallelAgent(Protocol):
+    """並列環境対応エージェントのプロトコル"""
+
+    def collect_rollout(self, env: VectorEnv) -> tuple[int, list[float]]: ...
+    def update(self) -> dict | None: ...
+
+
+@dataclass
+class ParallelTrainResult:
+    """並列トレーニング結果"""
+
+    episode_rewards: list[float]
+    eval_returns: list[tuple[int, float]]  # (update, avg_return)
+    eval_success_rates: list[tuple[int, float]]  # (update, success_rate)
+
+
+class ParallelAgentTrainer:
+    """並列環境を使うエージェントのトレーニングを抽象化したクラス
+
+    PPO+RNN など collect_rollout + update パターンのエージェント用
+    """
+
+    def __init__(
+        self,
+        env: VectorEnv,
+        agent: ParallelAgent,
+        eval_env: Env,
+        eval_agent: Agent,
+        get_weights: Callable[[], list],
+        set_weights: Callable[[Agent, list], None],
+        num_updates: int = 200,
+        eval_interval: int = 20,
+        eval_n: int = 100,
+        log_interval: int = 10,
+        stats_extractor: StatsExtractor | None = None,
+        eval_stats_extractor: EvalStatsExtractor | None = None,
+        eval_base_seed: int | None = None,
+    ):
+        """
+        Args:
+            env: 並列環境 (VectorEnvWrapper など)
+            agent: 並列対応エージェント (PPORNNAgent など)
+            eval_env: 評価用単一環境
+            eval_agent: 評価用エージェント（n_envs=1）
+            get_weights: 学習エージェントから重みを取得する関数
+            set_weights: 評価エージェントに重みを設定する関数
+            num_updates: 更新回数
+            eval_interval: 評価間隔（更新回数単位）
+            eval_n: 評価エピソード数
+            log_interval: ログ出力間隔
+            stats_extractor: 統計抽出関数
+            eval_stats_extractor: 評価統計抽出関数
+            eval_base_seed: 評価時の乱数シードベース
+        """
+        self.env = env
+        self.agent = agent
+        self.eval_env = eval_env
+        self.eval_agent = eval_agent
+        self.get_weights = get_weights
+        self.set_weights = set_weights
+        self.num_updates = num_updates
+        self.eval_interval = eval_interval
+        self.eval_n = eval_n
+        self.log_interval = log_interval
+        self.stats_extractor = stats_extractor
+        self.eval_stats_extractor = eval_stats_extractor
+        self.eval_base_seed = eval_base_seed
+
+    def train(self) -> ParallelTrainResult:
+        """トレーニングを実行"""
+        all_episode_rewards: list[float] = []
+        eval_returns: list[tuple[int, float]] = []
+        eval_success_rates: list[tuple[int, float]] = []
+
+        start_time = time.time()
+
+        for update in range(self.num_updates):
+            # rollout収集 & 更新
+            steps, episode_rewards = self.agent.collect_rollout(self.env)
+            all_episode_rewards.extend(episode_rewards)
+
+            self.agent.update()
+
+            # ログ出力
+            if (update + 1) % self.log_interval == 0:
+                self._log_progress(update, episode_rewards, start_time)
+
+            # 評価
+            if (update + 1) % self.eval_interval == 0:
+                eval_result = self._evaluate()
+                eval_returns.append((update + 1, eval_result.avg_return))
+                eval_success_rates.append((update + 1, eval_result.success_rate))
+
+                if self.eval_stats_extractor is not None:
+                    print(f"  → Eval: {self.eval_stats_extractor(eval_result)}")
+                else:
+                    print(
+                        f"  → Eval: Return={eval_result.avg_return:.3f}, "
+                        f"Success={eval_result.success_rate*100:.0f}%"
+                    )
+
+        elapsed = time.time() - start_time
+        print(f"\nTraining completed in {elapsed:.1f}s")
+
+        return ParallelTrainResult(
+            episode_rewards=all_episode_rewards,
+            eval_returns=eval_returns,
+            eval_success_rates=eval_success_rates,
+        )
+
+    def _format_time(self, seconds: float) -> str:
+        """秒数を読みやすい形式に変換"""
+        if seconds < 60:
+            return f"{seconds:.0f}s"
+        elif seconds < 3600:
+            m, s = divmod(int(seconds), 60)
+            return f"{m}m{s:02d}s"
+        else:
+            h, remainder = divmod(int(seconds), 3600)
+            m, s = divmod(remainder, 60)
+            return f"{h}h{m:02d}m"
+
+    def _log_progress(
+        self,
+        update: int,
+        episode_rewards: list[float],
+        start_time: float,
+    ):
+        """進捗をログ出力"""
+        avg_return = float(np.mean(episode_rewards)) if episode_rewards else 0.0
+
+        # 残り時間の計算
+        elapsed = time.time() - start_time
+        progress = (update + 1) / self.num_updates
+        remaining = elapsed / progress * (1 - progress) if progress > 0 else 0
+
+        eta_str = f"ETA={self._format_time(remaining)}"
+
+        # 外部から注入された統計抽出関数を使用
+        extra_stats = ""
+        if self.stats_extractor is not None:
+            extracted = self.stats_extractor(self.agent)
+            if extracted:
+                extra_stats = extracted
+
+        print(
+            f"Update {update + 1}/{self.num_updates}: "
+            f"Episodes={len(episode_rewards)}, AvgReturn={avg_return:.2f}{extra_stats}, {eta_str}"
+        )
+
+    def _evaluate(self) -> EvalResult:
+        """評価を実行（単一環境で）"""
+        # 学習エージェントから重みをコピー
+        weights = self.get_weights()
+        self.set_weights(self.eval_agent, weights)
+
+        returns = []
+        returns_success = []
+        returns_fail = []
+        steps_to_goal = []
+
+        for i in range(self.eval_n):
+            seed = self.eval_base_seed + i if self.eval_base_seed is not None else None
+            s = self.eval_env.reset(seed=seed)
+
+            if hasattr(self.eval_agent, "reset_state"):
+                self.eval_agent.reset_state()
+
+            done = False
+            total = 0.0
+            steps = 0
+
+            while not done:
+                a = self.eval_agent.act(s, explore=False)
+                s, r, terminated, truncated, _ = self.eval_env.step(a)
+                done = terminated or truncated
+                total += r
+                steps += 1
+
+            returns.append(total)
+            if terminated:
+                returns_success.append(total)
+                steps_to_goal.append(steps)
+            else:
+                returns_fail.append(total)
+
+        return EvalResult(
+            avg_return=float(np.mean(returns)),
+            success_rate=len(returns_success) / self.eval_n,
+            avg_steps=float(np.mean(steps_to_goal)) if steps_to_goal else 0.0,
+            avg_return_success=float(np.mean(returns_success)) if returns_success else 0.0,
+            avg_return_fail=float(np.mean(returns_fail)) if returns_fail else 0.0,
+            mean_abs_action=0.0,
+            n=self.eval_n,
+        )
