@@ -445,11 +445,19 @@ class ParallelRolloutBuffer:
         return episodes, episode_last_values
 
     def can_sample(self, batch_size: int, seq_len: int, burn_in: int = 0) -> bool:
-        """サンプリング可能か判定"""
+        """サンプリング可能か判定
+
+        batch_sizeはシーケンス数と比較する（エピソード数ではない）
+        """
         episodes, _ = self.extract_episodes()
         L = burn_in + seq_len
-        count = sum(1 for ep in episodes if len(ep["obs"]) >= L)
-        return count >= batch_size
+        # 全エピソードからサンプル可能なシーケンス数をカウント
+        total_sequences = 0
+        for ep in episodes:
+            ep_len = len(ep["obs"])
+            if ep_len >= L:
+                total_sequences += ep_len - L + 1
+        return total_sequences >= batch_size
 
     def get_sequence_batches(
         self,
@@ -770,6 +778,8 @@ class PPORNNAgent(BaseAgent):
         self.last_value_loss: float | None = None
         self.last_entropy: float | None = None
         self.last_approx_kl: float | None = None
+        self.last_clip_fraction: float | None = None
+        self.last_explained_var: float | None = None
         self.last_total_steps: int | None = None  # 更新時のstep数
 
     def reset_state(self, env_id: int | None = None):
@@ -972,6 +982,8 @@ class PPORNNAgent(BaseAgent):
         total_value_loss = 0.0
         total_entropy = 0.0
         total_approx_kl = 0.0
+        total_clip_fraction = 0.0
+        total_explained_var = 0.0
         n_updates = 0
         early_stopped = False
 
@@ -986,6 +998,8 @@ class PPORNNAgent(BaseAgent):
                 total_value_loss += loss_dict["value_loss"]
                 total_entropy += loss_dict["entropy"]
                 total_approx_kl += loss_dict["approx_kl"]
+                total_clip_fraction += loss_dict["clip_fraction"]
+                total_explained_var += loss_dict["explained_var"]
                 n_updates += 1
 
                 # target_kl による早期停止
@@ -1004,12 +1018,16 @@ class PPORNNAgent(BaseAgent):
             self.last_value_loss = total_value_loss / n_updates
             self.last_entropy = total_entropy / n_updates
             self.last_approx_kl = total_approx_kl / n_updates
+            self.last_clip_fraction = total_clip_fraction / n_updates
+            self.last_explained_var = total_explained_var / n_updates
 
             return {
                 "policy_loss": self.last_policy_loss,
                 "value_loss": self.last_value_loss,
                 "entropy": self.last_entropy,
                 "approx_kl": self.last_approx_kl,
+                "clip_fraction": self.last_clip_fraction,
+                "explained_var": self.last_explained_var,
             }
         return None
 
@@ -1071,8 +1089,25 @@ class PPORNNAgent(BaseAgent):
 
         # Approx KL (for early stopping): E[(r-1) - log(r)]
         log_ratio_data = log_ratio.data_required
-        ratio = np.exp(log_ratio_data)
-        approx_kl = float(np.sum(((ratio - 1.0) - log_ratio_data) * mask) / total_mask)
+        ratio_data = np.exp(log_ratio_data)
+        approx_kl = float(np.sum(((ratio_data - 1.0) - log_ratio_data) * mask) / total_mask)
+
+        # Clip fraction: ratioがclipされた割合
+        clipped = np.abs(ratio_data - 1.0) > self.clip_eps
+        clip_fraction = float(np.sum(clipped * mask) / total_mask)
+
+        # Explained variance: 1 - Var(returns - values) / Var(returns)
+        values_data = values.data_required
+        valid_returns = returns[mask > 0]
+        valid_values = values_data[mask > 0]
+        if len(valid_returns) > 1:
+            var_returns = np.var(valid_returns)
+            if var_returns > 1e-8:
+                explained_var = 1 - np.var(valid_returns - valid_values) / var_returns
+            else:
+                explained_var = 0.0
+        else:
+            explained_var = 0.0
 
         # Total loss
         loss = policy_loss + self.value_coef * value_loss - self.entropy_coef * entropy_mean
@@ -1094,6 +1129,8 @@ class PPORNNAgent(BaseAgent):
             "value_loss": float(value_loss.data_required),
             "entropy": float(entropy_mean.data_required),
             "approx_kl": approx_kl,
+            "clip_fraction": clip_fraction,
+            "explained_var": float(explained_var),
         }
 
     def _clip_grad_norm(self):
@@ -1126,6 +1163,8 @@ def ppo_rnn_stats_extractor(agent) -> str | None:
     value_loss = getattr(agent, "last_value_loss", None)
     entropy = getattr(agent, "last_entropy", None)
     approx_kl = getattr(agent, "last_approx_kl", None)
+    clip_fraction = getattr(agent, "last_clip_fraction", None)
+    explained_var = getattr(agent, "last_explained_var", None)
     total_steps = getattr(agent, "last_total_steps", None)
 
     parts = []
@@ -1137,6 +1176,10 @@ def ppo_rnn_stats_extractor(agent) -> str | None:
         parts.append(f"H={entropy:.3f}")
     if approx_kl is not None:
         parts.append(f"KL={approx_kl:.4f}")
+    if clip_fraction is not None:
+        parts.append(f"Clip={clip_fraction:.3f}")
+    if explained_var is not None:
+        parts.append(f"ExplVar={explained_var:.3f}")
     if total_steps is not None:
         parts.append(f"Steps={total_steps}")
 
