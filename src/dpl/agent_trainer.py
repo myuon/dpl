@@ -503,7 +503,12 @@ class ParallelAgentTrainer:
 
         for i in range(self.eval_n):
             seed = self.eval_base_seed + i if self.eval_base_seed is not None else None
-            s = self.eval_env.reset(seed=seed)
+            reset_result = self.eval_env.reset(seed=seed)
+            # gymnasium returns (obs, info), handle both cases
+            s = reset_result[0] if isinstance(reset_result, tuple) else reset_result
+            # Flatten multi-dimensional observations (e.g., MiniGrid images)
+            if hasattr(s, 'flatten'):
+                s = s.flatten()
 
             if hasattr(self.eval_agent, "reset_state"):
                 self.eval_agent.reset_state()
@@ -515,6 +520,8 @@ class ParallelAgentTrainer:
             while not done:
                 a = self.eval_agent.act(s, explore=False)
                 s, r, terminated, truncated, _ = self.eval_env.step(a)
+                if hasattr(s, 'flatten'):
+                    s = s.flatten()
                 done = terminated or truncated
                 total += r
                 steps += 1

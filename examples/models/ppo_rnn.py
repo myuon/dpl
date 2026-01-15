@@ -298,6 +298,219 @@ class EpisodeRolloutBuffer:
         self._total_steps = 0
 
 
+class ParallelRolloutBuffer:
+    """(rollout_len, n_envs)形式でrolloutを保持（ベクトル化版）
+
+    収集時は固定サイズ配列にベクトル代入（forループなし）
+    学習時はエピソード単位に変換してシーケンスバッチ抽出
+    """
+
+    def __init__(self, rollout_len: int, n_envs: int, obs_dim: int):
+        self.rollout_len = rollout_len
+        self.n_envs = n_envs
+        self.obs_dim = obs_dim
+
+        # 固定サイズの配列
+        self.obs = np.zeros((rollout_len, n_envs, obs_dim), np.float32)
+        self.actions = np.zeros((rollout_len, n_envs), np.int64)
+        self.rewards = np.zeros((rollout_len, n_envs), np.float32)
+        self.dones = np.zeros((rollout_len, n_envs), np.float32)
+        self.log_probs = np.zeros((rollout_len, n_envs), np.float32)
+        self.values = np.zeros((rollout_len, n_envs), np.float32)
+        self.episode_starts = np.zeros((rollout_len, n_envs), np.float32)
+
+        # GAE計算後
+        self.advantages = np.zeros((rollout_len, n_envs), np.float32)
+        self.returns = np.zeros((rollout_len, n_envs), np.float32)
+
+        self.ptr = 0
+
+    @property
+    def total_steps(self) -> int:
+        """現在のバッファ内のステップ数"""
+        return self.ptr * self.n_envs
+
+    def add(
+        self,
+        obs: np.ndarray,
+        actions: np.ndarray,
+        rewards: np.ndarray,
+        dones: np.ndarray,
+        log_probs: np.ndarray,
+        values: np.ndarray,
+        episode_starts: np.ndarray,
+    ):
+        """1ステップ分を追加（ベクトル代入、forループなし）
+
+        Args:
+            obs: (n_envs, obs_dim)
+            actions: (n_envs,)
+            rewards: (n_envs,)
+            dones: (n_envs,)
+            log_probs: (n_envs,)
+            values: (n_envs,)
+            episode_starts: (n_envs,) - このステップがエピソード開始か
+        """
+        if self.ptr >= self.rollout_len:
+            raise IndexError(
+                f"Buffer overflow: ptr={self.ptr} >= rollout_len={self.rollout_len}. "
+                f"Did you forget to call clear()?"
+            )
+        self.obs[self.ptr] = obs
+        self.actions[self.ptr] = actions
+        self.rewards[self.ptr] = rewards
+        self.dones[self.ptr] = dones
+        self.log_probs[self.ptr] = log_probs
+        self.values[self.ptr] = values
+        self.episode_starts[self.ptr] = episode_starts
+        self.ptr += 1
+
+    def compute_gae(self, last_values: np.ndarray, gamma: float, gae_lambda: float):
+        """(rollout_len, n_envs)形式でGAE計算（ベクトル化）
+
+        Args:
+            last_values: (n_envs,) 最終観測から計算したV(s)
+            gamma: 割引率
+            gae_lambda: GAEラムダ
+        """
+        gae = np.zeros(self.n_envs, np.float32)
+
+        for t in reversed(range(self.ptr)):
+            if t == self.ptr - 1:
+                next_values = last_values
+            else:
+                next_values = self.values[t + 1]
+
+            next_non_terminal = 1.0 - self.dones[t]
+            delta = self.rewards[t] + gamma * next_values * next_non_terminal - self.values[t]
+            gae = delta + gamma * gae_lambda * next_non_terminal * gae
+            self.advantages[t] = gae
+
+        self.returns[:self.ptr] = self.advantages[:self.ptr] + self.values[:self.ptr]
+
+    def extract_episodes(self) -> tuple[list[dict], list[float]]:
+        """(rollout_len, n_envs)からエピソード単位に変換
+
+        Returns:
+            episodes: list of dict (obs, actions, log_probs, advantages, returns)
+            episode_last_values: 各エピソードのlast_value（完了なら0、未完了ならV(s)）
+        """
+        episodes = []
+        episode_last_values = []
+
+        for env_id in range(self.n_envs):
+            # この環境のデータを抽出
+            env_obs = self.obs[:self.ptr, env_id]
+            env_actions = self.actions[:self.ptr, env_id]
+            env_log_probs = self.log_probs[:self.ptr, env_id]
+            env_advantages = self.advantages[:self.ptr, env_id]
+            env_returns = self.returns[:self.ptr, env_id]
+            env_dones = self.dones[:self.ptr, env_id]
+            env_starts = self.episode_starts[:self.ptr, env_id]
+
+            # エピソード境界を検出
+            start_indices = np.where(env_starts == 1.0)[0]
+            if len(start_indices) == 0:
+                start_indices = np.array([0])
+            elif start_indices[0] != 0:
+                start_indices = np.concatenate([[0], start_indices])
+
+            # 各エピソードを抽出
+            for i, start in enumerate(start_indices):
+                if i + 1 < len(start_indices):
+                    end = start_indices[i + 1]
+                else:
+                    end = self.ptr
+
+                if end <= start:
+                    continue
+
+                episodes.append({
+                    "obs": env_obs[start:end].copy(),
+                    "actions": env_actions[start:end].copy(),
+                    "log_probs": env_log_probs[start:end].copy(),
+                    "advantages": env_advantages[start:end].copy(),
+                    "returns": env_returns[start:end].copy(),
+                })
+
+                # 完了エピソードか未完了エピソードか
+                if i + 1 < len(start_indices):
+                    # 次のエピソードがある = このエピソードは完了
+                    episode_last_values.append(0.0)
+                else:
+                    # 最後のエピソード = rollout末端で打ち切り = last_valueでブートストラップ済み
+                    # GAE計算時にlast_valuesを使っているので、ここでは0でOK
+                    episode_last_values.append(0.0)
+
+        return episodes, episode_last_values
+
+    def can_sample(self, batch_size: int, seq_len: int, burn_in: int = 0) -> bool:
+        """サンプリング可能か判定"""
+        episodes, _ = self.extract_episodes()
+        L = burn_in + seq_len
+        count = sum(1 for ep in episodes if len(ep["obs"]) >= L)
+        return count >= batch_size
+
+    def get_sequence_batches(
+        self,
+        batch_size: int,
+        seq_len: int,
+        burn_in: int = 0,
+    ):
+        """シーケンスバッチを生成（既存ロジックを活用）
+
+        Yields:
+            obs: (B, L, obs_dim)
+            actions: (B, L)
+            log_probs: (B, L)
+            advantages: (B, L)
+            returns: (B, L)
+            mask: (B, L) - burn_in部分は0
+        """
+        episodes, _ = self.extract_episodes()
+        L = burn_in + seq_len
+
+        # サンプル可能なシーケンス位置を列挙
+        all_sequences = []
+        for ep_idx, ep in enumerate(episodes):
+            ep_len = len(ep["obs"])
+            if ep_len >= L:
+                for start in range(ep_len - L + 1):
+                    all_sequences.append((ep_idx, start))
+
+        if len(all_sequences) == 0:
+            return
+
+        np.random.shuffle(all_sequences)
+
+        for batch_start in range(0, len(all_sequences), batch_size):
+            batch_sequences = all_sequences[batch_start:batch_start + batch_size]
+            B = len(batch_sequences)
+
+            obs = np.zeros((B, L, self.obs_dim), np.float32)
+            actions = np.zeros((B, L), np.int64)
+            log_probs = np.zeros((B, L), np.float32)
+            advantages = np.zeros((B, L), np.float32)
+            returns = np.zeros((B, L), np.float32)
+            mask = np.zeros((B, L), np.float32)
+
+            for b, (ep_idx, start) in enumerate(batch_sequences):
+                ep = episodes[ep_idx]
+                obs[b] = ep["obs"][start:start + L]
+                actions[b] = ep["actions"][start:start + L]
+                log_probs[b] = ep["log_probs"][start:start + L]
+                advantages[b] = ep["advantages"][start:start + L]
+                returns[b] = ep["returns"][start:start + L]
+                mask[b, burn_in:] = 1.0
+
+            yield obs, actions, log_probs, advantages, returns, mask
+
+    def clear(self):
+        """バッファをクリア"""
+        self.ptr = 0
+        # 配列は再利用（ゼロクリア不要、ptrで管理）
+
+
 class RecurrentActorCritic(L.Layer):
     """LSTM付きActor-Critic
 
@@ -539,7 +752,10 @@ class PPORNNAgent(BaseAgent):
         self.rollout_len = rollout_len
 
         self.optimizer = Adam(lr=lr).setup(self.actor_critic)
-        self.buffer = EpisodeRolloutBuffer(max_episodes=max_episodes, n_envs=n_envs)
+        # n_envs > 1 の場合はベクトル化されたバッファを使用
+        self.buffer = ParallelRolloutBuffer(
+            rollout_len=rollout_len, n_envs=n_envs, obs_dim=obs_dim
+        )
 
         # 内部状態（単一環境用）
         self._last_log_prob = 0.0
@@ -676,7 +892,7 @@ class PPORNNAgent(BaseAgent):
                 self.buffer.end_episode(env_id=i)
 
     def collect_rollout(self, env) -> tuple[int, list[float]]:
-        """n_envs × rollout_len ステップのデータを収集
+        """n_envs × rollout_len ステップのデータを収集（ベクトル化版）
 
         Args:
             env: VectorEnvWrapper
@@ -685,36 +901,55 @@ class PPORNNAgent(BaseAgent):
             total_steps: 収集したステップ数
             episode_rewards: 完了したエピソードのリワードリスト
         """
+        # バッファをクリア（新しいrollout開始）
+        self.buffer.clear()
+
         obs = env.reset()  # (n_envs, obs_dim)
         self.reset_state()  # 全環境のLSTM状態リセット
 
         episode_rewards: list[float] = []
         current_rewards = np.zeros(self.n_envs)
+        episode_starts = np.ones(self.n_envs, dtype=np.float32)  # 最初は全環境がエピソード開始
 
         for step in range(self.rollout_len):
             actions = self.get_actions(obs)  # (n_envs,)
             next_obs, rewards, terminateds, truncateds = env.step(actions)
             dones = terminateds | truncateds
 
-            self.store_parallel(obs, actions, rewards, next_obs, dones, terminateds)
+            # ベクトル化された保存（forループなし）
+            self.buffer.add(
+                obs=obs,
+                actions=actions,
+                rewards=rewards,
+                dones=dones.astype(np.float32),
+                log_probs=self._last_log_probs,
+                values=self._last_values,
+                episode_starts=episode_starts,
+            )
 
             current_rewards += rewards
 
-            # done環境のリセット
-            for i in range(self.n_envs):
-                if dones[i]:
-                    episode_rewards.append(float(current_rewards[i]))
-                    current_rewards[i] = 0.0
-                    obs[i] = env.reset_single(i)
+            # done環境の処理
+            done_mask = dones.astype(bool)
+            if np.any(done_mask):
+                # 完了エピソードのリワードを記録
+                episode_rewards.extend(current_rewards[done_mask].tolist())
+                current_rewards[done_mask] = 0.0
+
+                # LSTM状態リセット（環境ごとに必要）
+                for i in np.where(done_mask)[0]:
+                    next_obs[i] = env.reset_single(i)
                     self.reset_state(env_id=i)
-                else:
-                    obs[i] = next_obs[i]
+
+            obs = next_obs
+            # 次のステップでエピソード開始になる環境をマーク
+            episode_starts = dones.astype(np.float32)
 
         # 未完了エピソードの最終観測から V(s) を計算（ブートストラップ用）
         _, last_values = self.actor_critic.steps(obs)
 
-        # 未完了エピソードをfinalize（last_valuesでブートストラップ）
-        self.buffer.finalize_rollout(last_values)
+        # GAE計算（ベクトル化）
+        self.buffer.compute_gae(last_values, self.gamma, self.gae_lambda)
 
         return self.n_envs * self.rollout_len, episode_rewards
 
@@ -724,8 +959,7 @@ class PPORNNAgent(BaseAgent):
         if self.buffer.total_steps < self.rollout_steps:
             return None
 
-        # GAE計算（エピソード単位）
-        self.buffer.compute_gae_all(self.gamma, self.gae_lambda)
+        # GAE計算はcollect_rollout()で実行済み
 
         # サンプリング可能か確認
         if not self.buffer.can_sample(self.batch_size, self.seq_len, self.burn_in):
