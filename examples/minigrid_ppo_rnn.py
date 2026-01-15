@@ -241,7 +241,9 @@ eval_agent = PPORNNAgent(
 
 def get_weights():
     """学習エージェントから重みを取得"""
-    return [p.data.copy() if p.data is not None else None for p in actor_critic.params()]
+    return [
+        p.data.copy() if p.data is not None else None for p in actor_critic.params()
+    ]
 
 
 def set_weights(eval_agent, weights):

@@ -64,6 +64,10 @@ class EpisodeRolloutBuffer:
         # 並列環境用: 各環境ごとの現在エピソード
         self.current_parallel: list[list[PPOTransition]] = [[] for _ in range(n_envs)]
 
+        # 各エピソードの last_value (未完了エピソードのブートストラップ用)
+        # done=True で終了したエピソードは 0.0、未完了は V(s_last)
+        self.episode_last_values: list[float] = []
+
         # GAE計算後のデータ
         self.computed_data: list[dict] = []
 
@@ -97,8 +101,10 @@ class EpisodeRolloutBuffer:
             if len(self.current) > 0:
                 self._total_steps += len(self.current)
                 self.episodes.append(self.current)
+                self.episode_last_values.append(0.0)  # 完了エピソード
                 if len(self.episodes) > self.max_episodes:
                     removed = self.episodes.pop(0)
+                    self.episode_last_values.pop(0)
                     self._total_steps -= len(removed)
             self.current = []
         else:
@@ -106,8 +112,10 @@ class EpisodeRolloutBuffer:
             if len(self.current_parallel[env_id]) > 0:
                 self._total_steps += len(self.current_parallel[env_id])
                 self.episodes.append(self.current_parallel[env_id])
+                self.episode_last_values.append(0.0)  # 完了エピソード
                 if len(self.episodes) > self.max_episodes:
                     removed = self.episodes.pop(0)
+                    self.episode_last_values.pop(0)
                     self._total_steps -= len(removed)
             self.current_parallel[env_id] = []
 
@@ -140,25 +148,35 @@ class EpisodeRolloutBuffer:
                 value=float(values[i]),
             ))
 
-    def finalize_rollout(self):
+    def finalize_rollout(self, last_values: np.ndarray | None = None):
         """rollout終了時に未完了エピソードも保存（途中打ち切り）
 
         並列環境でrollout_lenステップ収集後に呼ぶ
+
+        Args:
+            last_values: (n_envs,) 各環境の最終観測から計算した V(s)
+                         未完了エピソードのブートストラップに使用
         """
         for i in range(self.n_envs):
             if len(self.current_parallel[i]) > 0:
                 self._total_steps += len(self.current_parallel[i])
                 self.episodes.append(self.current_parallel[i])
+                # 未完了エピソードは last_value でブートストラップ
+                if last_values is not None:
+                    self.episode_last_values.append(float(last_values[i]))
+                else:
+                    self.episode_last_values.append(0.0)
                 self.current_parallel[i] = []
 
     def compute_gae_all(self, gamma: float, gae_lambda: float):
         """全エピソードのGAEを計算
 
-        各エピソードの最後はdone=Trueなので、last_value=0でブートストラップ
+        完了エピソード: last_value=0 でブートストラップ
+        未完了エピソード: last_value=V(s_last) でブートストラップ
         """
         self.computed_data = []
 
-        for ep in self.episodes:
+        for ep_idx, ep in enumerate(self.episodes):
             n = len(ep)
             if n == 0:
                 continue
@@ -170,13 +188,16 @@ class EpisodeRolloutBuffer:
             log_probs = np.array([t.log_prob for t in ep], dtype=np.float32)
             values = np.array([t.value for t in ep], dtype=np.float32)
 
+            # 未完了エピソードの last_value を取得
+            last_value = self.episode_last_values[ep_idx] if ep_idx < len(self.episode_last_values) else 0.0
+
             # GAE計算
             advantages = np.zeros(n, dtype=np.float32)
             gae = 0.0
 
             for t in reversed(range(n)):
                 if t == n - 1:
-                    next_value = 0.0  # エピソード終了
+                    next_value = last_value  # 完了なら0、未完了ならV(s_last)
                 else:
                     next_value = values[t + 1]
 
@@ -270,6 +291,7 @@ class EpisodeRolloutBuffer:
     def clear(self):
         """バッファをクリア（update後に呼ぶ）"""
         self.episodes = []
+        self.episode_last_values = []
         self.current = []
         self.current_parallel = [[] for _ in range(self.n_envs)]
         self.computed_data = []
@@ -688,8 +710,11 @@ class PPORNNAgent(BaseAgent):
                 else:
                     obs[i] = next_obs[i]
 
-        # 未完了エピソードをfinalize
-        self.buffer.finalize_rollout()
+        # 未完了エピソードの最終観測から V(s) を計算（ブートストラップ用）
+        _, last_values = self.actor_critic.steps(obs)
+
+        # 未完了エピソードをfinalize（last_valuesでブートストラップ）
+        self.buffer.finalize_rollout(last_values)
 
         return self.n_envs * self.rollout_len, episode_rewards
 
@@ -811,10 +836,9 @@ class PPORNNAgent(BaseAgent):
         entropy_mean = F.sum(masked_entropy) / total_mask
 
         # Approx KL (for early stopping): E[(r-1) - log(r)]
-        # 簡易版: E[log_ratio^2 / 2] (second-order Taylor)
         log_ratio_data = log_ratio.data_required
-        masked_log_ratio = log_ratio_data * mask
-        approx_kl = float(np.sum(masked_log_ratio ** 2) / (2 * total_mask))
+        ratio = np.exp(log_ratio_data)
+        approx_kl = float(np.sum(((ratio - 1.0) - log_ratio_data) * mask) / total_mask)
 
         # Total loss
         loss = policy_loss + self.value_coef * value_loss - self.entropy_coef * entropy_mean
